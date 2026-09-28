@@ -43,9 +43,9 @@ export function DataSource({ onLoaded, onFailure, fileName }: {
   };
 
   const loadTickers = async () => {
+    const list = ["M2RU", ...tickers.split(/[,\s]+/).filter(Boolean)];
     setBusy(true); setErr(null);
     try {
-      const list = ["M2RU", ...tickers.split(/[,\s]+/).filter(Boolean)];
       onLoaded(await api.loadTickers({ tickers: list, start, frequency: freq, m2_levels: m2 }), "Тикеры");
     } catch (e) {
       const message = (e as Error).message;
