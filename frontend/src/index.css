@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: 236 240 238;       /* #ECF0EE */
+  --surface: 255 255 255;
+  --ink: 21 32 42;         /* #15202A */
+  --muted: 91 104 115;     /* #5B6873 */
+  --line: 213 219 216;     /* #D5DBD8 */
+  --accent: 29 92 140;     /* #1D5C8C */
+  --pos: 47 122 85;        /* #2F7A55 */
+  --neg: 177 62 74;        /* #B13E4A */
+  color-scheme: light;
+}
+.dark {
+  --bg: 16 23 29;          /* #10171D */
+  --surface: 23 33 41;     /* #172129 */
+  --ink: 228 234 238;
+  --muted: 140 154 165;
+  --line: 38 51 61;
+  --accent: 111 168 214;
+  --pos: 108 184 142;
+  --neg: 230 120 130;
+  color-scheme: dark;
+}
+
+html, body, #root { height: 100%; }
+body {
+  @apply bg-bg text-ink font-sans antialiased;
+  font-feature-settings: "tnum" 1;
+  font-size: 15px;
+  line-height: 1.5;
+}
+:focus-visible { outline: 2px solid rgb(var(--accent)); outline-offset: 2px; }
+.num { font-variant-numeric: tabular-nums; }
+
+.recharts-cartesian-axis-tick-value { fill: rgb(var(--muted)); font-size: 12px; }
+.recharts-cartesian-grid line { stroke: rgb(var(--line)); }
+.recharts-default-tooltip { background: rgb(var(--surface)) !important; border-color: rgb(var(--line)) !important; border-radius: 6px; }
+.recharts-legend-item-text { color: rgb(var(--ink)) !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
