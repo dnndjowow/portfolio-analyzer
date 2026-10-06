@@ -21,12 +21,12 @@ export function PortfolioList({ items, activeId, compareIds, onOpen, onToggleCom
           <li key={p.id}
             className={cn("rounded-md border px-3 py-2", p.id === activeId ? "border-accent bg-accent/[0.05]" : "border-line")}>
             <div className="flex items-start gap-2">
-              <button type="button" className="min-w-0 flex-1 text-left" onClick={() => onOpen(p.id)}>
+              <div className="min-w-0 flex-1">
                 <input aria-label="Название портфеля" value={p.name}
-                  onChange={(e) => onRename(p.id, e.target.value)} onClick={(e) => e.stopPropagation()}
+                  onChange={(e) => onRename(p.id, e.target.value)} onFocus={() => onOpen(p.id)}
                   className="w-full truncate bg-transparent text-sm font-medium focus:outline-none" />
-                <span className="block truncate text-[12px] text-muted">{MODE_LABEL[p.mode]}{p.params && `, ${p.params}`}</span>
-              </button>
+                <button type="button" aria-label={`Открыть портфель ${p.name}`} aria-pressed={p.id === activeId} onClick={() => onOpen(p.id)} className="block w-full truncate text-left text-[11px] text-muted hover:text-accent">{MODE_LABEL[p.mode]}{p.params && `, ${p.params}`}</button>
+              </div>
               <Button variant="ghost" size="icon" aria-label={`Удалить ${p.name}`} onClick={() => onDelete(p.id)}>
                 <Trash2 className="h-4 w-4 text-muted" aria-hidden />
               </Button>

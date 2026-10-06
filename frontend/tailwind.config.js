@@ -4,7 +4,7 @@ export default {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
     extend: {
-      fontFamily: { sans: ['"Golos Text"', "system-ui", "sans-serif"] },
+      fontFamily: { sans: ["-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "sans-serif"] },
       colors: {
         bg: "rgb(var(--bg) / <alpha-value>)",
         surface: "rgb(var(--surface) / <alpha-value>)",
@@ -15,7 +15,7 @@ export default {
         pos: "rgb(var(--pos) / <alpha-value>)",
         neg: "rgb(var(--neg) / <alpha-value>)",
       },
-      borderRadius: { lg: "10px", md: "6px", sm: "4px" },
+      borderRadius: { lg: "24px", md: "12px", sm: "8px" },
     },
   },
   plugins: [],

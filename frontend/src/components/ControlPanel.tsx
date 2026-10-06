@@ -19,7 +19,7 @@ function PercentField({ id, label, value, onChange, hint }:
       <Label htmlFor={id}>{label}</Label>
       <div className="relative">
         <Input id={id} inputMode="decimal" value={value} onChange={(e) => onChange(e.target.value)} className="pr-8" />
-        <span className="pointer-events-none absolute right-3 top-2 text-sm text-muted">%</span>
+        <span className="pointer-events-none absolute right-3 top-3 text-sm text-muted">%</span>
       </div>
       {hint && <p className="mt-1 text-[12px] text-muted">{hint}</p>}
     </div>
@@ -116,7 +116,17 @@ export function OptimizePanel({ p, onChange, onRun, busy, disabled, range, rfRea
       <div role="radiogroup" aria-label="Режим оптимизации" className="space-y-1">
         {MODES.map(({ mode, hint }) => (
           <button key={mode} role="radio" aria-checked={p.mode === mode} type="button" onClick={() => set({ mode })}
-            className={cn("w-full rounded-md border px-3 py-2 text-left transition-colors",
+            tabIndex={p.mode === mode ? 0 : -1}
+            onKeyDown={(event) => {
+              const direction = ["ArrowRight", "ArrowDown"].includes(event.key) ? 1 : ["ArrowLeft", "ArrowUp"].includes(event.key) ? -1 : 0;
+              if (!direction && !["Home", "End"].includes(event.key)) return;
+              event.preventDefault();
+              const current = MODES.findIndex((item) => item.mode === p.mode);
+              const next = event.key === "Home" ? 0 : event.key === "End" ? MODES.length - 1 : (current + direction + MODES.length) % MODES.length;
+              set({ mode: MODES[next].mode });
+              event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("button")[next]?.focus();
+            }}
+            className={cn("strategy-option w-full rounded-md border px-3.5 py-3 text-left transition-colors",
               p.mode === mode ? "border-accent bg-accent/[0.06]" : "border-transparent hover:bg-bg")}>
             <span className="block text-sm font-medium">{MODE_LABEL[mode]}</span>
             <span className="block text-[12px] text-muted">{hint}</span>

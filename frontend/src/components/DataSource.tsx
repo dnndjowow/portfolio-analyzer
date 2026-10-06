@@ -1,17 +1,18 @@
 import { useRef, useState } from "react";
-import { FileSpreadsheet, Upload } from "lucide-react";
-import { api, type AssistantStage, type AssistantContext } from "@/api/client";
+import { Download, FileSpreadsheet, LoaderCircle, Upload } from "lucide-react";
+import { api, type DiagnosticStage, type DiagnosticContext } from "@/api/client";
 import type { UploadResult } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Select } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
 import { cn } from "@/lib/utils";
+import { downloadTemplate } from "@/lib/demo";
 
 const DEFAULT_TICKERS = "GC=F, SPY, TLT, MOEX:IMOEX, MOEX:SBER, MOEX:GAZP, EEM, BTC-USD, VNQ";
 
 export function DataSource({ onLoaded, onFailure, fileName }: {
   onLoaded: (r: UploadResult, label: string) => void;
-  onFailure: (stage: AssistantStage, error: string, context: AssistantContext) => void;
+  onFailure: (stage: DiagnosticStage, error: string, context: DiagnosticContext) => void;
   fileName?: string;
 }) {
   const [tab, setTab] = useState<"file" | "tickers">("file");
@@ -25,6 +26,7 @@ export function DataSource({ onLoaded, onFailure, fileName }: {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleFile = async (f: File) => {
+    if (busy) return;
     setBusy(true); setErr(null);
     try { onLoaded(await api.upload(f), f.name); } catch (e) {
       const message = (e as Error).message;
@@ -55,36 +57,35 @@ export function DataSource({ onLoaded, onFailure, fileName }: {
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-5">
       <Segmented label="Источник данных" value={tab} onChange={setTab}
         options={[{ value: "file", label: "Файл" }, { value: "tickers", label: "Тикеры" }]} />
 
       {tab === "file" ? (
+        <div className="space-y-3">
         <div
+          aria-busy={busy}
           onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
           onDragLeave={() => setDrag(false)}
           onDrop={(e) => { e.preventDefault(); setDrag(false); const f = e.dataTransfer.files[0]; if (f) handleFile(f); }}
-          className={cn("rounded-md border border-dashed px-4 py-5 text-center transition-colors",
-            drag ? "border-accent bg-accent/5" : "border-line")}>
-          {fileName ? (
-            <p className="flex items-center justify-center gap-2 text-sm font-medium">
-              <FileSpreadsheet className="h-4 w-4 text-accent" aria-hidden />{fileName}
-            </p>
-          ) : (
-            <p className="text-sm text-muted">Перетащите Excel или CSV: 10 индикаторов в столбцах B–K</p>
-          )}
-          <Button variant="outline" size="sm" className="mt-3" disabled={busy} onClick={() => inputRef.current?.click()}>
-            <Upload className="h-4 w-4" aria-hidden />{busy ? "Загружаю…" : fileName ? "Заменить файл" : "Выбрать файл"}
+          className={cn("dropzone", drag && "is-dragging")}>
+          <span className="dropzone-icon">{busy ? <LoaderCircle className="animate-spin" size={25} aria-hidden /> : fileName ? <FileSpreadsheet size={25} strokeWidth={1.5} aria-hidden /> : <Upload size={25} strokeWidth={1.5} aria-hidden />}</span>
+          <p className="dropzone-title">{fileName ?? "Перетащите файл сюда"}</p>
+          <p className="dropzone-hint">Excel или CSV · 10 индикаторов в столбцах B–K</p>
+          <Button size="sm" disabled={busy} onClick={() => inputRef.current?.click()}>
+            {busy ? "Загружаем…" : fileName ? "Заменить файл" : "Выбрать файл"}
           </Button>
           <input ref={inputRef} type="file" accept=".xlsx,.xlsm,.csv" className="hidden"
-            onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} />
+            onChange={(e) => { const file = e.currentTarget.files?.[0]; if (file) void handleFile(file); e.currentTarget.value = ""; }} />
+        </div>
+        <button type="button" onClick={downloadTemplate} className="mx-auto flex items-center gap-1.5 text-[11px] text-muted hover:text-accent"><Download size={12} aria-hidden />Скачать пример CSV · синтетические данные</button>
         </div>
       ) : (
         <div className="space-y-3">
           <div>
             <Label htmlFor="tickers">Индикаторы 2–10 (Индикатор 1 — всегда M2RU)</Label>
             <textarea id="tickers" rows={3} value={tickers} onChange={(e) => setTickers(e.target.value)}
-              className="w-full rounded-md border border-line bg-surface px-3 py-2 text-sm" />
+              className="w-full resize-y rounded-md border border-line bg-surface px-3 py-3 text-sm transition-shadow focus:border-accent focus:ring-4 focus:ring-accent/10" />
             <p className="mt-1 text-[12px] text-muted">Префикс MOEX: — Мосбиржа, остальное — Yahoo Finance.</p>
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -105,6 +106,7 @@ export function DataSource({ onLoaded, onFailure, fileName }: {
           <Button className="w-full" disabled={busy} onClick={loadTickers}>{busy ? "Загружаю котировки…" : "Загрузить котировки"}</Button>
         </div>
       )}
+      <p className="text-[10px] leading-relaxed text-muted">При сбоях данные текущей операции могут передаваться внешнему сервису диагностики.</p>
       {err && <p role="alert" className="text-[13px] text-neg">{err}</p>}
     </div>
   );

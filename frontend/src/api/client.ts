@@ -23,12 +23,12 @@ async function errorText(res: Response) {
 }
 
 export interface Common { returns: Dataset; settings: Settings; risk_free: number; allow_short: boolean }
-export type AssistantStage = "upload" | "tickers" | "frontier" | "compare" | "optimize" | "export";
-export type AssistantContext = Record<string, unknown>;
+export type DiagnosticStage = "upload" | "tickers" | "frontier" | "compare" | "optimize" | "export";
+export type DiagnosticContext = Record<string, unknown>;
 
 export const api = {
-  diagnose: (body: { stage: AssistantStage; error: string; context: AssistantContext }) =>
-    call<{ analysis: string }>("/api/assistant/diagnose", body),
+  diagnose: (body: { stage: DiagnosticStage; error: string; context: DiagnosticContext }) =>
+    call<{ analysis: string }>("/api/support/diagnose", body),
   async upload(file: File): Promise<UploadResult> {
     const fd = new FormData();
     fd.append("file", file);

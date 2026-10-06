@@ -78,7 +78,7 @@ class TickersRequest(BaseModel):
     m2_levels: list[dict] | None = None
 
 
-class AssistantRequest(BaseModel):
+class SupportRequest(BaseModel):
     stage: Literal["upload", "tickers", "frontier", "compare", "optimize", "export"]
     error: str = Field(..., min_length=1, max_length=800)
     context: dict = Field(default_factory=dict)
@@ -129,23 +129,26 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/api/assistant/diagnose")
-def assistant_diagnose(req: AssistantRequest, request: Request):
+@app.post("/api/assistant/diagnose", include_in_schema=False)
+@app.post("/api/support/diagnose")
+def support_diagnose(req: SupportRequest, request: Request):
     if not os.getenv("OPENROUTER_API_KEY"):
-        raise HTTPException(503, "Резервный помощник не настроен: добавьте OPENROUTER_API_KEY в .env.")
+        log.warning("Support diagnosis requested without OPENROUTER_API_KEY")
+        raise HTTPException(503, "Автоматическая диагностика временно недоступна.")
     client = request.client.host if request.client else "unknown"
     now = time.monotonic()
     recent = [t for t in _assistant_calls.get(client, []) if now - t < 3600]
     if recent and now - recent[-1] < 15:
-        raise HTTPException(429, "Ассистент уже анализирует недавнюю ошибку. Попробуйте чуть позже.")
+        raise HTTPException(429, "Проверка недавней ошибки ещё выполняется. Попробуйте чуть позже.")
     if len(recent) >= 20:
-        raise HTTPException(429, "Достигнут лимит обращений к резервному помощнику.")
+        raise HTTPException(429, "Слишком много запросов диагностики. Попробуйте позже.")
     recent.append(now)
     _assistant_calls[client] = recent
     try:
         return {"analysis": assistant.diagnose(req.stage, req.error, req.context)}
     except assistant.AssistantError as e:
-        raise HTTPException(502, str(e)) from e
+        log.warning("Support diagnosis unavailable: %s", e)
+        raise HTTPException(502, "Автоматическая диагностика временно недоступна.") from e
 
 
 @app.post("/api/upload")

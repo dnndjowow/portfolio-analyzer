@@ -43,11 +43,11 @@ export function WeightsPie({ assets, weights, title }: { assets: string[]; weigh
   };
 
   return (
-    <div className="grid gap-4 sm:grid-cols-[minmax(220px,1fr)_minmax(180px,220px)]">
+    <div className="weights-layout grid min-w-0 gap-5">
       <div ref={wrap} className="relative h-[260px]">
         <ResponsiveContainer>
           <PieChart>
-            <Pie data={slices} dataKey="abs" nameKey="name" innerRadius="58%" outerRadius="90%" paddingAngle={1}
+            <Pie data={slices} dataKey="abs" nameKey="name" innerRadius="68%" outerRadius="90%" paddingAngle={2}
               isAnimationActive={false} stroke="none"
               activeIndex={focused ? slices.indexOf(focused) : undefined}
               activeShape={(p: any) => <Sector {...p} outerRadius={p.outerRadius + 6} />}
@@ -80,9 +80,9 @@ export function WeightsPie({ assets, weights, title }: { assets: string[]; weigh
             return (
               <li key={name}>
                 <button type="button" disabled={off} onClick={() => toggle(i)}
-                  className={cn("flex w-full items-center gap-2 rounded px-1.5 py-0.5 text-left text-[13px]",
+                  className={cn("flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[12px]",
                     isolated === i ? "bg-bg font-medium" : "hover:bg-bg", off && "opacity-40")}>
-                  <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: ASSET_COLORS[i] }} />
+                  <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: ASSET_COLORS[i] }} />
                   <span className="flex-1 truncate">{name}</span>
                   <span className={cn("num", w < 0 && "text-neg")}>{pct(w, 1)}</span>
                 </button>

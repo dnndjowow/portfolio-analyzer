@@ -1,18 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FileDown, Moon, Sun } from "lucide-react";
-import { api, type AssistantContext, type AssistantStage, type Common } from "@/api/client";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowRight, ChartNoAxesCombined, Check, ChevronDown, FileDown, Layers3, Moon, Plus, Info, Sun, X } from "lucide-react";
+import { api, type DiagnosticContext, type DiagnosticStage, type Common } from "@/api/client";
 import type { CompareResult, FrontierResult, Portfolio, Settings, UploadResult } from "@/types";
 import { MODE_LABEL } from "@/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { DataSource, PreviewTable } from "@/components/DataSource";
 import { OptimizePanel, parsePct, SettingsPanel, type OptimizeParams } from "@/components/ControlPanel";
-import { FrontierChart } from "@/components/FrontierChart";
-import { WeightsPie } from "@/components/WeightsPie";
-import { MetricsTable, ReturnsCurve } from "@/components/CompareView";
 import { PortfolioList } from "@/components/PortfolioList";
 import { loadPortfolios, savePortfolios } from "@/lib/storage";
 import { pct, uid } from "@/lib/utils";
+import { Welcome } from "@/components/Welcome";
+import { createDemoDataset } from "@/lib/demo";
+
+const FrontierChart = lazy(() => import("@/components/FrontierChart").then((module) => ({ default: module.FrontierChart })));
+const WeightsPie = lazy(() => import("@/components/WeightsPie").then((module) => ({ default: module.WeightsPie })));
+const ReturnsCurve = lazy(() => import("@/components/CompareView").then((module) => ({ default: module.ReturnsCurve })));
+const MetricsTable = lazy(() => import("@/components/CompareView").then((module) => ({ default: module.MetricsTable })));
 
 const DEFAULT_SETTINGS: Settings = {
   units: "percent", frequency: "monthly", resample_to: null, missing: "ffill", risk_free_nominal: true,
@@ -24,7 +28,7 @@ const PERIOD_AXIS: Record<string, string> = { daily: "День", weekly: "Нед
 function useTheme() {
   const [dark, setDark] = useState(() => {
     try { const s = localStorage.getItem("theme"); if (s) return s === "dark"; } catch { /* нет доступа */ }
-    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+    return false;
   });
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
@@ -41,6 +45,8 @@ function useDebounced<T>(value: T, ms = 350) {
 
 export default function Dashboard() {
   const [dark, setDark] = useTheme();
+  const [view, setView] = useState<"overview" | "workspace">("overview");
+  const [compact, setCompact] = useState(() => window.matchMedia("(max-width: 800px)").matches);
   const [upload, setUpload] = useState<UploadResult | null>(null);
   const [fileName, setFileName] = useState<string>();
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -56,13 +62,19 @@ export default function Dashboard() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notes, setNotes] = useState<string[]>([]);
-  const [assistantAnalysis, setAssistantAnalysis] = useState<string | null>(null);
-  const [assistantLoading, setAssistantLoading] = useState(false);
-  const assistantBusy = useRef(false);
-  const lastAssistantFailure = useRef("");
+  const [supportAnalysis, setSupportAnalysis] = useState<string | null>(null);
+  const [supportLoading, setSupportLoading] = useState(false);
+  const supportBusy = useRef(false);
+  const lastSupportFailure = useRef("");
 
   useEffect(() => { loadPortfolios().then(setPortfolios); }, []);
   useEffect(() => { savePortfolios(portfolios); }, [portfolios]);
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 800px)");
+    const update = () => setCompact(media.matches);
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
 
   // итоговые настройки: инфляция из текстового поля, флаг номинальной r_f
   const effSettings = useMemo<Settings>(() => ({
@@ -86,18 +98,18 @@ export default function Dashboard() {
   }, [compareIds, activeId, visible]);
   const active = visible.find((p) => p.id === activeId) ?? null;
 
-  const reportFailure = useCallback((stage: AssistantStage, message: string, context: AssistantContext = {}) => {
+  const reportFailure = useCallback((stage: DiagnosticStage, message: string, context: DiagnosticContext = {}) => {
     setError(message);
-    setAssistantAnalysis(null);
+    setSupportAnalysis(null);
     const key = [stage, message].join(":");
-    if (assistantBusy.current || lastAssistantFailure.current === key) return;
-    assistantBusy.current = true;
-    lastAssistantFailure.current = key;
-    setAssistantLoading(true);
+    if (supportBusy.current || lastSupportFailure.current === key) return;
+    supportBusy.current = true;
+    lastSupportFailure.current = key;
+    setSupportLoading(true);
     api.diagnose({ stage, error: message, context })
-      .then((result) => setAssistantAnalysis(result.analysis))
-      .catch((e) => setAssistantAnalysis("Не удалось получить разбор: " + (e as Error).message))
-      .finally(() => { assistantBusy.current = false; setAssistantLoading(false); });
+      .then((result) => setSupportAnalysis(result.analysis))
+      .catch(() => setSupportAnalysis(null))
+      .finally(() => { supportBusy.current = false; setSupportLoading(false); });
   }, []);
 
   // эффективная граница
@@ -133,10 +145,12 @@ export default function Dashboard() {
   }, []);
 
   const onLoaded = (r: UploadResult, label: string) => {
-    setUpload(r); setFileName(label); setError(null); setAssistantAnalysis(null); lastAssistantFailure.current = ""; setFrontier(null); setCompare(null);
+    setUpload(r); setFileName(label); setError(null); setSupportAnalysis(null); lastSupportFailure.current = ""; setFrontier(null); setCompare(null);
     setNotes(r.warnings);
     setSettings((s) => ({ ...s, units: r.suggested_units }));
     setActiveId(null); setCompareIds([]);
+    setView("workspace");
+    scrollToTop();
   };
 
   const runOptimize = async () => {
@@ -190,179 +204,136 @@ export default function Dashboard() {
   } : undefined;
   const freq = effSettings.resample_to ?? effSettings.frequency;
 
-  return (
-    <div className="min-h-full lg:grid lg:grid-cols-[340px_1fr]">
-      <aside className="border-line bg-surface lg:sticky lg:top-0 lg:h-screen lg:overflow-y-auto lg:border-r">
-        <div className="flex items-center justify-between px-5 pb-2 pt-5">
-          <div className="flex items-center gap-2.5">
-            <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden>
-              <path d="M4 27 C10 23 14 12 28 6" stroke="rgb(var(--accent))" strokeWidth="3" fill="none" strokeLinecap="round" />
-              <circle cx="18" cy="13.5" r="3.2" fill="#C4862B" />
-            </svg>
-            <h1 className="text-[22px] font-bold tracking-[-0.02em]">Портфель</h1>
-          </div>
-          <Button variant="ghost" size="icon" aria-label={dark ? "Светлая тема" : "Тёмная тема"} onClick={() => setDark(!dark)}>
-            {dark ? <Sun className="h-4 w-4" aria-hidden /> : <Moon className="h-4 w-4" aria-hidden />}
-          </Button>
+  const showOverview = (anchor?: string) => {
+    setView("overview");
+    requestAnimationFrame(() => {
+      if (anchor) document.getElementById(anchor)?.scrollIntoView({ behavior: motionBehavior() });
+      else scrollToTop();
+    });
+  };
+  const openWorkspace = () => {
+    if (upload) { setView("workspace"); scrollToTop(); }
+    else showOverview("start");
+  };
+  const runDemo = () => {
+    const sample = createDemoDataset();
+    onLoaded(sample, "Демонстрационный набор · 120 месяцев");
+    addPortfolio({ name: "Равные веса", mode: "equal", params: "по 10%", weights: sample.dataset.columns.map(() => 0.1), assets: sample.dataset.columns });
+  };
+  const addEqual = () => addPortfolio({
+    name: "Равные веса", mode: "equal", params: `по ${pct(1 / columns.length, 1)}`,
+    weights: columns.map(() => 1 / columns.length), assets: columns,
+  });
+  const feedback = (error || notes.length > 0) && (
+    <div className="notice-stack">
+      {error && <div role="alert" className="notice notice-error"><span>{error}</span></div>}
+      {error && (supportLoading || supportAnalysis) && (
+        <div className="notice notice-support" aria-live="polite">
+          <h2><Info size={16} className="text-accent" aria-hidden />Подсказка по ошибке</h2>
+          <p>{supportLoading ? "Проверяем причину ошибки…" : supportAnalysis}</p>
         </div>
+      )}
+      {notes.map((note) => (
+        <div key={note} className="notice"><span>{note}</span><button type="button" aria-label="Скрыть уведомление" className="shrink-0 text-muted hover:text-ink" onClick={() => setNotes((list) => list.filter((item) => item !== note))}><X size={15} aria-hidden /></button></div>
+      ))}
+    </div>
+  );
 
-        <PanelSection title="Данные"><DataSource onLoaded={onLoaded} onFailure={reportFailure} fileName={fileName} /></PanelSection>
-        {upload && (
-          <>
-            <PanelSection title="Предобработка">
-              <SettingsPanel settings={settings} onChange={setSettings} hasDates={upload.dataset.has_dates}
-                inflationText={inflationText} setInflationText={setInflationText} onInflationSeries={onInflationSeries} />
-            </PanelSection>
-            <PanelSection title="Оптимизация">
-              <OptimizePanel p={params} onChange={setParams} onRun={runOptimize} busy={busy} disabled={!upload}
-                range={range} rfReal={frontier?.risk_free_real} />
-            </PanelSection>
-            <PanelSection title="Портфели" action={
-              <Button variant="ghost" size="sm" onClick={() => addPortfolio({
-                name: "Равные веса", mode: "equal", params: "по 10%", weights: Array(10).fill(0.1), assets: columns })}>
-                + равные веса
-              </Button>}>
-              <PortfolioList items={visible} activeId={activeId} compareIds={compareIds}
-                onOpen={setActiveId}
-                onToggleCompare={(id) => setCompareIds((ids) => ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id].slice(0, 5))}
-                onDelete={(id) => { setPortfolios((l) => l.filter((p) => p.id !== id)); setCompareIds((ids) => ids.filter((x) => x !== id)); if (activeId === id) setActiveId(null); }}
-                onRename={(id, name) => setPortfolios((l) => l.map((p) => (p.id === id ? { ...p, name } : p)))} />
-              {visible.length > 0 && (
-                <div className="mt-3 flex gap-2">
-                  <Button variant="outline" size="sm" onClick={exportXlsx}><FileDown className="h-4 w-4" aria-hidden />Excel</Button>
-                  <Button variant="outline" size="sm" onClick={exportCsv}><FileDown className="h-4 w-4" aria-hidden />CSV</Button>
-                </div>
-              )}
-            </PanelSection>
-          </>
-        )}
-      </aside>
-
-      <main className="space-y-5 p-4 sm:p-6 lg:p-8">
-        {!upload && (assistantLoading || assistantAnalysis) && (
-          <div className="rounded-md border border-accent/30 bg-accent/[0.05] px-4 py-3 text-sm">
-            <p className="mb-1 font-medium">Резервный мини-ассистент</p>
-            {assistantLoading
-              ? <p className="text-muted">Передаю контекст сбоя в OpenRouter для анализа…</p>
-              : <p className="whitespace-pre-wrap">{assistantAnalysis}</p>}
+  return (
+    <div className="app-shell" id="top">
+      <header className="app-nav">
+        <div className="nav-inner">
+          <button type="button" className="brand" aria-label="Portfolio — на главную" onClick={() => showOverview()}><Brand /></button>
+          <nav className="nav-links" aria-label="Основная навигация">
+            <button type="button" className={view === "overview" ? "active" : ""} onClick={() => showOverview()}>Обзор</button>
+            <button type="button" className={view === "workspace" ? "active" : ""} onClick={openWorkspace}>Аналитика</button>
+            <button type="button" onClick={() => showOverview("features")}>Возможности</button>
+          </nav>
+          <div className="nav-actions">
+            <Button variant="ghost" size="icon" aria-label={dark ? "Светлая тема" : "Тёмная тема"} title={dark ? "Светлая тема" : "Тёмная тема"} onClick={() => setDark(!dark)}>{dark ? <Sun size={17} aria-hidden /> : <Moon size={17} aria-hidden />}</Button>
+            <Button size="sm" onClick={openWorkspace}>{upload ? "К анализу" : "Начать анализ"}<ArrowRight size={13} aria-hidden /></Button>
           </div>
-        )}
-        {!upload ? <EmptyState /> : (
-          <>
-            <header>
-              <p className="text-[13px] text-muted">{fileName}</p>
-              <p className="text-[26px] font-semibold leading-tight tracking-[-0.02em]">
-                {upload.n_obs} наблюдений, 10 индикаторов, инфляция {settings.inflation.source === "constant" ? `${inflationText}% в год` : "по своему ряду"}
-              </p>
-            </header>
+        </div>
+      </header>
 
-            {(error || notes.length > 0) && (
-              <div className="space-y-2">
-                {error && <p role="alert" className="rounded-md border border-neg/40 bg-neg/[0.07] px-4 py-2.5 text-sm">{error}</p>}
-                {(assistantLoading || assistantAnalysis) && (
-                  <div className="rounded-md border border-accent/30 bg-accent/[0.05] px-4 py-3 text-sm">
-                    <p className="mb-1 font-medium">Резервный мини-ассистент</p>
-                    {assistantLoading
-                      ? <p className="text-muted">Передаю контекст сбоя и данные операции в OpenRouter для анализа…</p>
-                      : <p className="whitespace-pre-wrap">{assistantAnalysis}</p>}
-                  </div>
-                )}
-                {notes.map((n) => (
-                  <p key={n} className="flex items-start justify-between gap-3 rounded-md border border-[#C4862B]/40 bg-[#C4862B]/[0.08] px-4 py-2.5 text-sm">
-                    <span>{n}</span>
-                    <button className="text-muted hover:text-ink" aria-label="Скрыть" onClick={() => setNotes((x) => x.filter((y) => y !== n))}>×</button>
-                  </p>
-                ))}
+      {view === "overview" || !upload ? (
+        <main><Welcome dataSource={<DataSource onLoaded={onLoaded} onFailure={reportFailure} fileName={fileName} />} feedback={feedback} onDemo={runDemo} /></main>
+      ) : (
+        <main className="workspace" id="workspace">
+          <div className="workspace-heading">
+            <div><p className="eyebrow">РАБОЧЕЕ ПРОСТРАНСТВО</p><h1>Ваш портфель. В деталях.</h1><p className="source-tag"><Check size={13} className="text-pos" aria-hidden /><span>{fileName}</span></p></div>
+            <Button variant="outline" size="sm" onClick={() => showOverview("start")}>Загрузить другие данные <Plus size={14} aria-hidden /></Button>
+          </div>
+          <div className="workspace-grid">
+            <aside className="workspace-sidebar" aria-label="Настройки анализа">
+              <PanelSection title="Источник данных" open={false}>
+                <DataSource onLoaded={onLoaded} onFailure={reportFailure} fileName={fileName} />
+              </PanelSection>
+              <PanelSection title="Параметры данных" open={false}>
+                <SettingsPanel settings={settings} onChange={setSettings} hasDates={upload.dataset.has_dates}
+                  inflationText={inflationText} setInflationText={setInflationText} onInflationSeries={onInflationSeries} />
+              </PanelSection>
+              <PanelSection title="Ваша стратегия" open={!compact}>
+                <OptimizePanel p={params} onChange={setParams} onRun={runOptimize} busy={busy} disabled={!upload}
+                  range={range} rfReal={frontier?.risk_free_real} />
+              </PanelSection>
+              <PanelSection title="Мои портфели" open={!compact}>
+                <Button variant="outline" size="sm" className="mb-4 w-full" onClick={addEqual}><Plus size={14} aria-hidden />Добавить равные веса</Button>
+                <PortfolioList items={visible} activeId={activeId} compareIds={compareIds}
+                  onOpen={setActiveId}
+                  onToggleCompare={(id) => setCompareIds((ids) => ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id].slice(0, 5))}
+                  onDelete={(id) => { setPortfolios((list) => list.filter((p) => p.id !== id)); setCompareIds((ids) => ids.filter((x) => x !== id)); if (activeId === id) setActiveId(null); }}
+                  onRename={(id, name) => setPortfolios((list) => list.map((p) => p.id === id ? { ...p, name } : p))} />
+                {visible.length > 0 && <div className="mt-4 flex gap-2"><Button variant="outline" size="sm" onClick={exportXlsx}><FileDown size={14} aria-hidden />Excel</Button><Button variant="outline" size="sm" onClick={exportCsv}><FileDown size={14} aria-hidden />CSV</Button></div>}
+              </PanelSection>
+            </aside>
+            <div className="workspace-results">
+              <div className="summary-strip" aria-label="Сводка данных">
+                <div className="summary-item"><p>Наблюдений</p><strong className="num">{upload.n_obs}</strong><small>в исходном наборе</small></div>
+                <div className="summary-item"><p>Индикаторов</p><strong className="num">{columns.length}</strong><small>включая M2RU</small></div>
+                <div className="summary-item"><p>Инфляция</p><strong className="num">{settings.inflation.source === "constant" ? `${inflationText}%` : "Свой ряд"}</strong><small>{settings.inflation.source === "constant" ? "годовых" : "за каждый период"}</small></div>
               </div>
-            )}
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Эффективная граница</CardTitle>
-                {frontier && (
-                  <p className="text-[13px] text-muted num">
-                    Мин. риск {pct(frontier.min_vol.vol)} при {pct(frontier.min_vol.ret)}
-                    {frontier.max_sharpe && `, макс. Шарп ${frontier.max_sharpe.sharpe.toFixed(2).replace(".", ",")}`}
-                  </p>
-                )}
-              </CardHeader>
-              <CardContent>
-                {frontier ? (
-                  <FrontierChart data={frontier} dark={dark}
-                    portfolios={(compare?.series ?? []).map((s) => ({ ...s.point, name: s.name }))} />
-                ) : <div className="grid h-[440px] place-items-center text-sm text-muted">Строю границу и 5000 случайных портфелей…</div>}
-              </CardContent>
-            </Card>
-
-            <div className="grid gap-5 xl:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+              {feedback}
+              <Suspense fallback={<div className="chart-placeholder" role="status"><span className="chart-loading" aria-hidden /><p>Открываем инструменты анализа…</p></div>}>
               <Card>
-                <CardHeader><CardTitle>Веса</CardTitle>{active && <span className="text-[13px] text-muted">{active.name}</span>}</CardHeader>
-                <CardContent>
-                  {active ? <WeightsPie assets={active.assets} weights={active.weights} title={active.name} />
-                    : <p className="py-16 text-center text-sm text-muted">Выберите режим слева и нажмите «Оптимизировать».</p>}
-                </CardContent>
-              </Card>
-              <Card>
-                <CardHeader><CardTitle>Кривая доходности</CardTitle></CardHeader>
-                <CardContent>
-                  {compare ? <ReturnsCurve data={compare} periodLabel={PERIOD_AXIS[freq]} />
-                    : <p className="py-16 text-center text-sm text-muted">Появится после первой оптимизации.</p>}
-                </CardContent>
-              </Card>
-            </div>
-
-            {compare && (
-              <Card>
-                <CardHeader>
-                  <CardTitle>Показатели</CardTitle>
-                  <span className="text-[13px] text-muted">до 5 портфелей; отметьте их в списке слева</span>
+                <CardHeader><div><p className="mb-1 text-[10px] font-medium uppercase tracking-[.12em] text-muted">Риск и доходность</p><CardTitle>Эффективная граница</CardTitle></div>
+                  {frontier && <p className="text-[11px] text-muted num">Мин. риск {pct(frontier.min_vol.vol)}{frontier.max_sharpe && ` · Шарп ${frontier.max_sharpe.sharpe.toFixed(2).replace(".", ",")}`}</p>}
                 </CardHeader>
-                <CardContent><MetricsTable data={compare} ppyLabel={PERIOD_SHORT[freq]} /></CardContent>
+                <CardContent>
+                  {frontier ? <FrontierChart data={frontier} dark={dark} portfolios={(compare?.series ?? []).map((series) => ({ ...series.point, name: series.name }))} />
+                    : <div className="chart-placeholder" role="status">{error ? <><ChartNoAxesCombined size={28} aria-hidden /><p>График пока недоступен. Проверьте данные и параметры анализа.</p><Button variant="outline" size="sm" onClick={() => setSettings((s) => ({ ...s }))}>Повторить расчёт</Button></> : <><span className="chart-loading" aria-hidden /><p>Строим границу и 5 000 возможных портфелей…</p></>}</div>}
+                </CardContent>
               </Card>
-            )}
-
-            <details className="rounded-lg border border-line bg-surface">
-              <summary className="cursor-pointer px-5 py-3 text-[15px] font-medium">Исходные данные, первые 20 строк</summary>
-              <div className="px-5 pb-5"><PreviewTable result={upload} /></div>
-            </details>
-          </>
-        )}
-      </main>
+              <div className="grid min-w-0 gap-5 2xl:grid-cols-2">
+                <Card><CardHeader><div><p className="mb-1 text-[10px] font-medium uppercase tracking-[.12em] text-muted">Состав портфеля</p><CardTitle>Каждый актив на своём месте</CardTitle></div>{active && <span className="text-[11px] text-muted">{active.name}</span>}</CardHeader>
+                  <CardContent>{active ? <WeightsPie assets={active.assets} weights={active.weights} title={active.name} /> : <div className="empty-chart"><Layers3 aria-hidden /><p>Выберите стратегию и нажмите «Оптимизировать»,<br />чтобы увидеть распределение активов.</p></div>}</CardContent>
+                </Card>
+                <Card><CardHeader><div><p className="mb-1 text-[10px] font-medium uppercase tracking-[.12em] text-muted">Динамика капитала</p><CardTitle>История в одной кривой</CardTitle></div></CardHeader>
+                  <CardContent>{compare ? <ReturnsCurve data={compare} periodLabel={PERIOD_AXIS[freq]} /> : <div className="empty-chart"><ChartNoAxesCombined aria-hidden /><p>Создайте портфель, чтобы увидеть<br />его доходность и просадку.</p></div>}</CardContent>
+                </Card>
+              </div>
+              {compare && <Card><CardHeader><CardTitle>Сравнение в деталях</CardTitle><span className="text-[11px] text-muted">До 5 портфелей — выберите их в списке</span></CardHeader><CardContent><MetricsTable data={compare} ppyLabel={PERIOD_SHORT[freq]} /></CardContent></Card>}
+              <details className="source-details"><summary>Исходные данные · первые 20 строк<ChevronDown aria-hidden /></summary><div className="px-5 pb-5"><PreviewTable result={upload} /></div></details>
+              </Suspense>
+            </div>
+          </div>
+        </main>
+      )}
+      <footer className="app-footer"><div className="footer-inner"><button type="button" className="brand" aria-label="Portfolio — на главную" onClick={() => showOverview()}><Brand /></button><p>Portfolio Analyzer. Данные, баланс и ваша стратегия.</p><a href="#top">Наверх ↑</a></div></footer>
     </div>
   );
 }
 
-function PanelSection({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <section className="border-t border-line px-5 py-4 first-of-type:border-t-0">
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-[15px] font-semibold">{title}</h2>{action}
-      </div>
-      {children}
-    </section>
-  );
+function Brand() {
+  return <><span className="brand-mark"><svg viewBox="0 0 28 28" fill="none" aria-hidden><path d="M5 23V16M14 23V9M23 23V4" stroke="currentColor" strokeWidth="3.8" strokeLinecap="round" /></svg></span><span>Portfolio<span className="text-accent">.</span></span></>;
 }
 
-function EmptyState() {
-  return (
-    <div className="mx-auto flex min-h-[70vh] max-w-xl flex-col justify-center">
-      <svg viewBox="0 0 400 180" className="mb-6 w-full max-w-md" aria-hidden>
-        {Array.from({ length: 140 }).map((_, i) => {
-          const x = 40 + ((i * 37) % 300) + ((i * 13) % 17);
-          const y = 150 - ((i * 53) % 110) * (0.4 + ((x - 40) / 300) * 0.6);
-          return <circle key={i} cx={x} cy={y} r={2.2} fill="rgb(var(--muted))" fillOpacity={0.25} />;
-        })}
-        <path d="M60 150 C90 70 170 40 360 28" stroke="rgb(var(--ink))" strokeWidth={2.5} fill="none" />
-        <circle cx={148} cy={58} r={6} fill="#C4862B" />
-      </svg>
-      <h2 className="text-[28px] font-semibold leading-tight tracking-[-0.02em]">Загрузите ряды доходностей, чтобы построить границу</h2>
-      <p className="mt-3 max-w-prose text-muted">
-        Excel или CSV: в строке заголовков 10 индикаторов, ниже — не меньше 30 наблюдений. Первый индикатор —
-        рублёвая денежная масса. Доходности будут пересчитаны в реальные с учётом инфляции.
-      </p>
-    </div>
-  );
+function PanelSection({ title, open = true, children }: { title: string; open?: boolean; children: React.ReactNode }) {
+  return <details className="panel-section" open={open}><summary>{title}<ChevronDown aria-hidden /></summary><div className="panel-section-body">{children}</div></details>;
 }
+
+function motionBehavior(): ScrollBehavior { return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth"; }
+function scrollToTop() { window.scrollTo({ top: 0, behavior: motionBehavior() }); }
 
 const mergeNotes = (a: string[], b: string[]) => Array.from(new Set([...a, ...b]));
 function download(blob: Blob, name: string) {
