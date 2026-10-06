@@ -1,11 +1,21 @@
 import { get, set } from "idb-keyval";
 import type { Portfolio } from "@/types";
 
-const KEY = "portfolio-app:portfolios";
+const PORTFOLIOS_KEY = "portfolio-app:portfolios";
 
-export const loadPortfolios = async (): Promise<Portfolio[]> => {
-  try { return (await get<Portfolio[]>(KEY)) ?? []; } catch { return []; }
-};
-export const savePortfolios = async (list: Portfolio[]) => {
-  try { await set(KEY, list); } catch { /* IndexedDB недоступна — живём в памяти */ }
-};
+export async function loadPortfolios(): Promise<Portfolio[]> {
+  try {
+    const portfolios = await get<Portfolio[]>(PORTFOLIOS_KEY);
+    return portfolios ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export async function savePortfolios(portfolios: Portfolio[]) {
+  try {
+    await set(PORTFOLIOS_KEY, portfolios);
+  } catch {
+    // При недоступной IndexedDB портфели остаются в памяти текущей вкладки.
+  }
+}

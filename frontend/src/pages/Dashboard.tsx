@@ -27,20 +27,40 @@ const PERIOD_AXIS: Record<string, string> = { daily: "День", weekly: "Нед
 
 function useTheme() {
   const [dark, setDark] = useState(() => {
-    try { const s = localStorage.getItem("theme"); if (s) return s === "dark"; } catch { /* нет доступа */ }
+    try {
+      const savedTheme = localStorage.getItem("theme");
+      if (savedTheme) {
+        return savedTheme === "dark";
+      }
+    } catch {
+      // Настройка недоступна, используем светлую тему.
+    }
+
     return false;
   });
+
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
-    try { localStorage.setItem("theme", dark ? "dark" : "light"); } catch { /* нет доступа */ }
+
+    try {
+      localStorage.setItem("theme", dark ? "dark" : "light");
+    } catch {
+      // Тема применяется и без доступа к localStorage.
+    }
   }, [dark]);
+
   return [dark, setDark] as const;
 }
 
-function useDebounced<T>(value: T, ms = 350) {
-  const [v, setV] = useState(value);
-  useEffect(() => { const t = setTimeout(() => setV(value), ms); return () => clearTimeout(t); }, [value, ms]);
-  return v;
+function useDebounced<T>(value: T, delay = 350) {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const timeoutId = setTimeout(() => setDebouncedValue(value), delay);
+    return () => clearTimeout(timeoutId);
+  }, [value, delay]);
+
+  return debouncedValue;
 }
 
 export default function Dashboard() {
@@ -77,15 +97,15 @@ export default function Dashboard() {
   }, []);
 
   // итоговые настройки: инфляция из текстового поля, флаг номинальной r_f
-  const effSettings = useMemo<Settings>(() => ({
+  const effectiveSettings = useMemo<Settings>(() => ({
     ...settings, risk_free_nominal: params.rfNominal,
     inflation: { ...settings.inflation, annual_rate: parsePct(inflationText) ?? 0 },
   }), [settings, inflationText, params.rfNominal]);
 
   const common = useMemo<Common | null>(() => upload && {
-    returns: upload.dataset, settings: effSettings, risk_free: parsePct(params.rf) ?? 0, allow_short: params.allowShort,
-  }, [upload, effSettings, params.rf, params.allowShort]);
-  const debCommon = useDebounced(common);
+    returns: upload.dataset, settings: effectiveSettings, risk_free: parsePct(params.rf) ?? 0, allow_short: params.allowShort,
+  }, [upload, effectiveSettings, params.rf, params.allowShort]);
+  const debouncedParameters = useDebounced(common);
 
   const columns = upload?.dataset.columns ?? [];
   const visible = useMemo(
@@ -93,8 +113,21 @@ export default function Dashboard() {
     [portfolios, columns],
   );
   const shown = useMemo(() => {
-    const ids = compareIds.filter((id) => visible.some((p) => p.id === id));
-    return (ids.length ? ids : activeId ? [activeId] : []).map((id) => visible.find((p) => p.id === id)!).filter(Boolean);
+    let selectedIds = compareIds.filter((id) => visible.some((portfolio) => portfolio.id === id));
+
+    if (!selectedIds.length && activeId) {
+      selectedIds = [activeId];
+    }
+
+    const selectedPortfolios: Portfolio[] = [];
+    for (const portfolioId of selectedIds) {
+      const selectedPortfolio = visible.find((portfolio) => portfolio.id === portfolioId);
+      if (selectedPortfolio) {
+        selectedPortfolios.push(selectedPortfolio);
+      }
+    }
+
+    return selectedPortfolios;
   }, [compareIds, activeId, visible]);
   const active = visible.find((p) => p.id === activeId) ?? null;
 
@@ -109,33 +142,66 @@ export default function Dashboard() {
     api.diagnose({ stage, error: message, context })
       .then((result) => setSupportAnalysis(result.analysis))
       .catch(() => setSupportAnalysis(null))
-      .finally(() => { supportBusy.current = false; setSupportLoading(false); });
+      .finally(() => {
+        supportBusy.current = false;
+        setSupportLoading(false);
+      });
   }, []);
 
   // эффективная граница
   useEffect(() => {
-    if (!debCommon) return;
-    let cancel = false;
-    api.frontier(debCommon)
-      .then((r) => { if (!cancel) { setFrontier(r); setError(null); setNotes((n) => mergeNotes(n, r.warnings)); } })
-      .catch((e) => !cancel && (setFrontier(null), reportFailure("frontier", e.message, { ...(debCommon ?? {}) })));
-    return () => { cancel = true; };
-  }, [debCommon, reportFailure]);
+    if (!debouncedParameters) return;
+    let cancelled = false;
+
+    api.frontier(debouncedParameters)
+      .then((result) => {
+        if (cancelled) return;
+        setFrontier(result);
+        setError(null);
+        setNotes((currentNotes) => mergeNotes(currentNotes, result.warnings));
+      })
+      .catch((requestError) => {
+        if (cancelled) return;
+        setFrontier(null);
+        reportFailure("frontier", requestError.message, { ...(debouncedParameters ?? {}) });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedParameters, reportFailure]);
 
   // кривые и метрики показанных портфелей
-  const shownKey = shown.map((p) => p.id + p.name).join(",");
+  const shownKey = shown.map((portfolio) => portfolio.id + portfolio.name).join(",");
   useEffect(() => {
-    if (!debCommon || !shown.length) { setCompare(null); return; }
-    let cancel = false;
-    api.compare({ ...debCommon, portfolios: shown.map(({ name, weights }) => ({ name, weights })) })
-      .then((r) => !cancel && setCompare(r))
-      .catch((e) => !cancel && reportFailure("compare", e.message, {
-        ...(debCommon ?? {}),
-        portfolios: shown.map(({ name, weights }) => ({ name, weights })),
-      }));
-    return () => { cancel = true; };
+    if (!debouncedParameters || !shown.length) {
+      setCompare(null);
+      return;
+    }
+
+    let cancelled = false;
+    const portfoliosToCompare = shown.map(({ name, weights }) => ({ name, weights }));
+
+    api.compare({ ...debouncedParameters, portfolios: portfoliosToCompare })
+      .then((result) => {
+        if (!cancelled) {
+          setCompare(result);
+        }
+      })
+      .catch((requestError) => {
+        if (!cancelled) {
+          reportFailure("compare", requestError.message, {
+            ...(debouncedParameters ?? {}),
+            portfolios: portfoliosToCompare,
+          });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debCommon, shownKey, reportFailure]);
+  }, [debouncedParameters, shownKey, reportFailure]);
 
   const addPortfolio = useCallback((p: Omit<Portfolio, "id" | "createdAt">) => {
     const full = { ...p, id: uid(), createdAt: Date.now() };
@@ -144,35 +210,85 @@ export default function Dashboard() {
     setCompareIds((ids) => (ids.length < 5 ? [...ids, full.id] : ids));
   }, []);
 
-  const onLoaded = (r: UploadResult, label: string) => {
-    setUpload(r); setFileName(label); setError(null); setSupportAnalysis(null); lastSupportFailure.current = ""; setFrontier(null); setCompare(null);
-    setNotes(r.warnings);
-    setSettings((s) => ({ ...s, units: r.suggested_units }));
-    setActiveId(null); setCompareIds([]);
+  const onLoaded = (result: UploadResult, label: string) => {
+    setUpload(result);
+    setFileName(label);
+    setError(null);
+    setSupportAnalysis(null);
+    lastSupportFailure.current = "";
+    setFrontier(null);
+    setCompare(null);
+    setNotes(result.warnings);
+    setSettings((currentSettings) => ({
+      ...currentSettings,
+      units: result.suggested_units,
+    }));
+    setActiveId(null);
+    setCompareIds([]);
     setView("workspace");
     scrollToTop();
   };
 
   const runOptimize = async () => {
     if (!common) return;
-    const tr = parsePct(params.targetReturn), tv = parsePct(params.targetVol);
-    if (params.mode === "efficient_risk" && tr == null) return setError("Введите целевую доходность в процентах.");
-    if (params.mode === "efficient_return" && tv == null) return setError("Введите целевую волатильность в процентах.");
-    setBusy(true); setError(null);
+    const targetReturn = parsePct(params.targetReturn);
+    const targetVolatility = parsePct(params.targetVol);
+
+    if (params.mode === "efficient_risk" && targetReturn == null) {
+      setError("Введите целевую доходность в процентах.");
+      return;
+    }
+
+    if (params.mode === "efficient_return" && targetVolatility == null) {
+      setError("Введите целевую волатильность в процентах.");
+      return;
+    }
+
+    setBusy(true);
+    setError(null);
+
     try {
-      const r = await api.optimize({ ...common, mode: params.mode, target_return: tr ?? undefined, target_vol: tv ?? undefined });
-      const detail = params.mode === "max_sharpe" ? `r_f ${params.rf}%`
-        : params.mode === "efficient_risk" ? `доходность ${params.targetReturn}%`
-        : params.mode === "efficient_return" ? `волатильность ${params.targetVol}%` : "";
-      const n = portfolios.filter((p) => p.mode === params.mode).length + 1;
-      addPortfolio({ name: `${MODE_LABEL[params.mode]} ${n}`, mode: params.mode, params: [detail, params.allowShort ? "шорты" : ""].filter(Boolean).join(", "),
-        weights: r.weights, assets: r.assets });
-      setNotes((x) => mergeNotes(x, r.warnings));
-    } catch (e) {
-      reportFailure("optimize", (e as Error).message, {
-        ...common, mode: params.mode, target_return: tr ?? undefined, target_vol: tv ?? undefined,
+      const result = await api.optimize({
+        ...common,
+        mode: params.mode,
+        target_return: targetReturn ?? undefined,
+        target_vol: targetVolatility ?? undefined,
       });
-    } finally { setBusy(false); }
+
+      let parameterDescription = "";
+      if (params.mode === "max_sharpe") {
+        parameterDescription = `r_f ${params.rf}%`;
+      } else if (params.mode === "efficient_risk") {
+        parameterDescription = `доходность ${params.targetReturn}%`;
+      } else if (params.mode === "efficient_return") {
+        parameterDescription = `волатильность ${params.targetVol}%`;
+      }
+
+      const portfolioNumber = portfolios.filter((portfolio) => portfolio.mode === params.mode).length + 1;
+      const portfolioParameters = [parameterDescription];
+      if (params.allowShort) {
+        portfolioParameters.push("шорты");
+      }
+
+      addPortfolio({
+        name: `${MODE_LABEL[params.mode]} ${portfolioNumber}`,
+        mode: params.mode,
+        params: portfolioParameters.filter(Boolean).join(", "),
+        weights: result.weights,
+        assets: result.assets,
+      });
+      setNotes((currentNotes) => mergeNotes(currentNotes, result.warnings));
+
+    } catch (requestError) {
+      reportFailure("optimize", (requestError as Error).message, {
+        ...common,
+        mode: params.mode,
+        target_return: targetReturn ?? undefined,
+        target_vol: targetVolatility ?? undefined,
+      });
+    } finally {
+      setBusy(false);
+    }
   };
 
   const exportXlsx = async () => {
@@ -202,7 +318,7 @@ export default function Dashboard() {
     retLo: frontier.frontier[0].ret, retHi: frontier.frontier.at(-1)!.ret,
     volLo: frontier.frontier[0].vol, volHi: frontier.frontier.at(-1)!.vol,
   } : undefined;
-  const freq = effSettings.resample_to ?? effSettings.frequency;
+  const freq = effectiveSettings.resample_to ?? effectiveSettings.frequency;
 
   const showOverview = (anchor?: string) => {
     setView("overview");
@@ -335,11 +451,13 @@ function PanelSection({ title, open = true, children }: { title: string; open?: 
 function motionBehavior(): ScrollBehavior { return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth"; }
 function scrollToTop() { window.scrollTo({ top: 0, behavior: motionBehavior() }); }
 
-const mergeNotes = (a: string[], b: string[]) => Array.from(new Set([...a, ...b]));
+function mergeNotes(currentNotes: string[], newNotes: string[]) {
+  return Array.from(new Set([...currentNotes, ...newNotes]));
+}
 function download(blob: Blob, name: string) {
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  const downloadLink = document.createElement("a");
+  downloadLink.href = URL.createObjectURL(blob);
+  downloadLink.download = name;
+  downloadLink.click();
+  setTimeout(() => URL.revokeObjectURL(downloadLink.href), 1000);
 }
