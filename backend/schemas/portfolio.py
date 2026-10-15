@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from schemas.data import Dataset, Settings
@@ -11,13 +13,14 @@ class PortfolioRequest(BaseModel):
         0.05,
         description='Годовая безрисковая ставка в долях',
     )
-    allow_short: bool = False
+    # Старые клиенты с false совместимы; true всегда отклоняется с HTTP 422.
+    allow_short: Literal[False] = False
 
 
 class OptimizeRequest(PortfolioRequest):
     mode: Mode
-    target_return: float | None = None
-    target_vol: float | None = None
+    target_return: float | None = Field(None, allow_inf_nan=False)
+    target_vol: float | None = Field(None, ge=0, allow_inf_nan=False)
 
 
 class FrontierRequest(PortfolioRequest):

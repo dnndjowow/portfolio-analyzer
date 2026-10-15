@@ -19,7 +19,8 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s %(name)s: %(message)s',
 )
 
-N_ASSETS = 10
+MIN_ASSETS = 2
+MAX_ASSETS = 50
 MIN_OBS = 30
 PERIODS_PER_YEAR = {
     'daily': 252,
@@ -34,5 +35,7 @@ RESAMPLE_RULE = {
     'quarterly': 'QE',
     'yearly': 'YE',
 }
-MONEY_RE = re.compile(r'(m2|денежн|рубл[её]в|money\s*supply)', re.I)
-MONEY_DEFAULT_NAME = 'M2RU'
+# M2 — только отдельный ориентир. В ряды портфеля и оптимизацию он не входит.
+EXCLUDED_INDICATOR_RE = re.compile(
+    r'(^[mм]2(?:ru)?$|^[mм]²$|modigliani|модильяни|денежн\w*\s+масс|money\s*supply)', re.I,
+)

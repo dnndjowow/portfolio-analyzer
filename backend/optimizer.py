@@ -7,8 +7,7 @@ from scipy.optimize import minimize
 
 
 logger = logging.getLogger('portfolio.optimizer')
-SHORT_BOUND = 1.0
-TOL = 1e-9
+TOL = 1e-7
 
 
 class Mode(str, Enum):
@@ -27,7 +26,6 @@ class Inputs:
     # Годовая ожидаемая доходность и ковариационная матрица.
     mu: np.ndarray
     cov: np.ndarray
-    allow_short: bool = False
 
     @property
     def n(self) -> int:
@@ -35,11 +33,7 @@ class Inputs:
 
     @property
     def bounds(self):
-        minimum_weight = 0.0
-        if self.allow_short:
-            minimum_weight = -SHORT_BOUND
-
-        return [(minimum_weight, 1.0)] * self.n
+        return [(0.0, 1.0)] * self.n
 
 
 def _format_percent(value: float) -> str:
@@ -49,7 +43,6 @@ def _format_percent(value: float) -> str:
 def make_inputs(
     returns: np.ndarray,
     periods_per_year: int,
-    allow_short: bool = False,
 ) -> Inputs:
     returns_array = np.asarray(returns, dtype=float)
     expected_returns = returns_array.mean(axis=0) * periods_per_year
@@ -58,7 +51,6 @@ def make_inputs(
     return Inputs(
         mu=expected_returns,
         cov=covariance_matrix,
-        allow_short=allow_short,
     )
 
 
@@ -117,31 +109,32 @@ def _solve(
         if not result.success:
             continue
 
+        if not np.isfinite(result.x).all() or np.any(result.x < -TOL) or np.any(result.x > 1 + TOL):
+            continue
+        candidate_weights = np.clip(result.x, 0.0, 1.0)
+        candidate_weights /= candidate_weights.sum()
         constraints_satisfied = True
 
         for constraint in constraints:
-            constraint_value = constraint['fun'](result.x)
+            constraint_value = constraint['fun'](candidate_weights)
 
             if constraint['type'] == 'eq':
-                constraint_satisfied = abs(constraint_value) < 1e-6
+                constraint_satisfied = abs(constraint_value) <= TOL
             else:
-                constraint_satisfied = constraint_value > -1e-6
+                constraint_satisfied = constraint_value >= -TOL
 
             if not constraint_satisfied:
                 constraints_satisfied = False
                 break
 
         if constraints_satisfied and result.fun < best_objective:
-            best_weights = result.x
-            best_objective = result.fun
+            best_weights = candidate_weights
+            best_objective = objective(candidate_weights)
 
     if best_weights is None:
         raise OptimizationError('Солвер не нашёл допустимого решения — проверьте ограничения.')
 
-    # Убираем численный шум и восстанавливаем сумму весов после округления.
-    portfolio_weights = np.where(np.abs(best_weights) < 1e-8, 0.0, best_weights)
-
-    return portfolio_weights / portfolio_weights.sum()
+    return best_weights
 
 
 def _starts(portfolio_inputs: Inputs, k: int = 6, seed: int = 0):
@@ -156,10 +149,11 @@ def _starts(portfolio_inputs: Inputs, k: int = 6, seed: int = 0):
 
 
 def min_volatility(portfolio_inputs: Inputs) -> np.ndarray:
+    scale = max(float(np.max(np.diag(portfolio_inputs.cov))), 1e-12)
     return _solve(
-        lambda weights: weights @ portfolio_inputs.cov @ weights,
+        lambda weights: weights @ portfolio_inputs.cov @ weights / scale,
         portfolio_inputs,
-        jac=lambda weights: 2 * portfolio_inputs.cov @ weights,
+        jac=lambda weights: 2 * portfolio_inputs.cov @ weights / scale,
     )
 
 
@@ -179,7 +173,7 @@ def max_sharpe(portfolio_inputs: Inputs, risk_free: float) -> np.ndarray:
 
 
 def sharpe_warning(portfolio_inputs: Inputs, risk_free: float) -> str | None:
-    if not portfolio_inputs.allow_short and np.max(portfolio_inputs.mu) <= risk_free:
+    if np.max(portfolio_inputs.mu) <= risk_free:
         return (
             f'Ни один индикатор не обгоняет r_f ({_format_percent(risk_free)} реальных): '
             f'лучшая реальная доходность {_format_percent(np.max(portfolio_inputs.mu))}. '
@@ -192,45 +186,50 @@ def sharpe_warning(portfolio_inputs: Inputs, risk_free: float) -> str | None:
 
 def return_range(portfolio_inputs: Inputs) -> tuple[float, float]:
     minimum_return = port_return(min_volatility(portfolio_inputs), portfolio_inputs)
+    return minimum_return, float(np.max(portfolio_inputs.mu))
 
-    if portfolio_inputs.allow_short:
-        maximum_return_weights = _solve(
-            lambda weights: -(weights @ portfolio_inputs.mu),
-            portfolio_inputs,
-            jac=lambda weights: -portfolio_inputs.mu,
-        )
-        maximum_return = port_return(maximum_return_weights, portfolio_inputs)
+
+def _extreme_return_weights(portfolio_inputs: Inputs, maximum: bool = True) -> np.ndarray:
+    extreme = np.max(portfolio_inputs.mu) if maximum else np.min(portfolio_inputs.mu)
+    indices = np.flatnonzero(np.abs(portfolio_inputs.mu - extreme) <= 1e-12)
+    weights = np.zeros(portfolio_inputs.n)
+    if len(indices) == 1:
+        weights[indices[0]] = 1.0
     else:
-        maximum_return = float(np.max(portfolio_inputs.mu))
+        sub_inputs = Inputs(portfolio_inputs.mu[indices], portfolio_inputs.cov[np.ix_(indices, indices)])
+        weights[indices] = min_volatility(sub_inputs)
+    return weights
 
-    return minimum_return, maximum_return
 
-
-def efficient_risk(portfolio_inputs: Inputs, target_return: float) -> np.ndarray:
-    minimum_asset_return = -np.inf
-    if not portfolio_inputs.allow_short:
-        minimum_asset_return = float(np.min(portfolio_inputs.mu))
-
-    minimum_frontier_return, maximum_return = return_range(portfolio_inputs)
-
-    if target_return > maximum_return + 1e-9 or target_return < minimum_asset_return - 1e-9:
+def efficient_risk(portfolio_inputs: Inputs, target_return: float, starts=None) -> np.ndarray:
+    minimum_return = float(np.min(portfolio_inputs.mu))
+    maximum_return = float(np.max(portfolio_inputs.mu))
+    if not np.isfinite(target_return) or not minimum_return - 1e-9 <= target_return <= maximum_return + 1e-9:
         raise OptimizationError(
             f'Целевая доходность {_format_percent(target_return)} недостижима. '
-            f'Допустимо до {_format_percent(maximum_return)} годовых (реальных).'
+            f'Допустимо от {_format_percent(minimum_return)} до {_format_percent(maximum_return)}.'
         )
-
+    if abs(target_return - maximum_return) <= 1e-12:
+        return _extreme_return_weights(portfolio_inputs)
+    if abs(target_return - minimum_return) <= 1e-12:
+        return _extreme_return_weights(portfolio_inputs, maximum=False)
     return_constraint = {
         'type': 'eq',
         'fun': lambda weights: weights @ portfolio_inputs.mu - target_return,
         'jac': lambda weights: portfolio_inputs.mu,
     }
-
+    scale = max(float(np.max(np.diag(portfolio_inputs.cov))), 1e-12)
+    if starts is None:
+        fraction = (target_return - minimum_return) / (maximum_return - minimum_return)
+        feasible = (1 - fraction) * _extreme_return_weights(portfolio_inputs, False)
+        feasible += fraction * _extreme_return_weights(portfolio_inputs)
+        starts = [feasible, *_starts(portfolio_inputs)]
     return _solve(
-        lambda weights: weights @ portfolio_inputs.cov @ weights,
+        lambda weights: weights @ portfolio_inputs.cov @ weights / scale,
         portfolio_inputs,
         [return_constraint],
-        starts=_starts(portfolio_inputs),
-        jac=lambda weights: 2 * portfolio_inputs.cov @ weights,
+        starts=starts,
+        jac=lambda weights: 2 * portfolio_inputs.cov @ weights / scale,
     )
 
 
@@ -268,12 +267,11 @@ def optimize(
     target_vol: float | None = None,
 ) -> np.ndarray:
     logger.info(
-        'optimize mode=%s rf=%s target_return=%s target_vol=%s short=%s',
+        'optimize mode=%s rf=%s target_return=%s target_vol=%s',
         mode,
         risk_free,
         target_return,
         target_vol,
-        portfolio_inputs.allow_short,
     )
 
     if mode == Mode.MIN_VOL:
@@ -307,27 +305,73 @@ def optimize(
     return portfolio_weights
 
 
+def _point(weights: np.ndarray, portfolio_inputs: Inputs) -> dict:
+    return {
+        'ret': port_return(weights, portfolio_inputs),
+        'vol': port_vol(weights, portfolio_inputs),
+        'weights': weights.tolist(),
+    }
+
+
 def efficient_frontier(portfolio_inputs: Inputs, n_points: int = 40) -> list[dict]:
-    minimum_return, maximum_return = return_range(portfolio_inputs)
-    frontier_points = []
-
-    for target_return in np.linspace(minimum_return, maximum_return, n_points):
+    minimum_weights = min_volatility(portfolio_inputs)
+    minimum_return = port_return(minimum_weights, portfolio_inputs)
+    maximum_return = float(np.max(portfolio_inputs.mu))
+    points = [_point(minimum_weights, portfolio_inputs)]
+    if maximum_return - minimum_return <= 1e-12:
+        return points
+    previous_weights = minimum_weights
+    maximum_weights = _extreme_return_weights(portfolio_inputs)
+    for target in np.linspace(minimum_return, maximum_return, n_points)[1:]:
+        previous_return = port_return(previous_weights, portfolio_inputs)
+        fraction = (target - previous_return) / (maximum_return - previous_return)
+        feasible = (1 - fraction) * previous_weights + fraction * maximum_weights
         try:
-            if target_return > minimum_return + 1e-10:
-                portfolio_weights = efficient_risk(portfolio_inputs, float(target_return))
-            else:
-                portfolio_weights = min_volatility(portfolio_inputs)
-
+            weights = efficient_risk(portfolio_inputs, float(target), starts=[feasible])
         except OptimizationError:
-            continue
+            # Повторяем с несколькими стартами, а не пропускаем кусок границы.
+            weights = efficient_risk(portfolio_inputs, float(target))
+        points.append(_point(weights, portfolio_inputs))
+        previous_weights = weights
+    return points
 
-        frontier_points.append({
-            'ret': port_return(portfolio_weights, portfolio_inputs),
-            'vol': port_vol(portfolio_weights, portfolio_inputs),
-            'weights': portfolio_weights.tolist(),
-        })
 
-    return frontier_points
+def refine_frontier(portfolio_inputs: Inputs, frontier: list[dict], cloud: list[dict]) -> list[dict]:
+    """Уточнить дискретную линию там, где её хорда пересекает допустимое облако.
+
+    Оптимальная кривая выпукла в координатах (доходность, риск). Хорда может
+    иметь риск выше облака, хотя каждый её узел оптимален. Добавляем истинный
+    оптимум для соответствующей доходности до совпадения в пределах TOL.
+    """
+    points = sorted(frontier, key=lambda point: point['ret'])
+    if len(points) < 2:
+        return points
+    returns = np.array([point['ret'] for point in cloud])
+    vols = np.array([point['vol'] for point in cloud])
+    in_range = (returns > points[0]['ret']) & (returns < points[-1]['ret'])
+    sample_weights = np.array([point['weights'] for point in cloud])[in_range]
+    returns, vols = returns[in_range], vols[in_range]
+    while returns.size:
+        interpolated = np.interp(returns, [p['ret'] for p in points], [p['vol'] for p in points])
+        gaps = interpolated - vols
+        worst = int(np.argmax(gaps))
+        if gaps[worst] <= TOL:
+            break
+        target = float(returns[worst])
+        try:
+            weights = efficient_risk(portfolio_inputs, target, starts=[sample_weights[worst]])
+        except OptimizationError:
+            weights = efficient_risk(portfolio_inputs, target)
+        point = _point(weights, portfolio_inputs)
+        if point['vol'] > vols[worst] + TOL:
+            raise OptimizationError('Не удалось согласовать эффективную границу с допустимыми портфелями.')
+        points.append(point)
+        points.sort(key=lambda p: p['ret'])
+        # Этот образец проверен оптимизатором; исключаем повтор из-за округления.
+        sample_weights = np.delete(sample_weights, worst, axis=0)
+        returns = np.delete(returns, worst)
+        vols = np.delete(vols, worst)
+    return points
 
 
 def monte_carlo(
@@ -335,32 +379,29 @@ def monte_carlo(
     risk_free: float,
     n: int = 5000,
     seed: int = 42,
+    frontier: list[dict] | None = None,
 ) -> list[dict]:
     random_generator = np.random.default_rng(seed)
-
-    if portfolio_inputs.allow_short:
-        portfolio_weights = random_generator.normal(size=(n * 3, portfolio_inputs.n))
-        portfolio_weights = portfolio_weights / portfolio_weights.sum(axis=1, keepdims=True)
-        valid_weights = np.all(np.abs(portfolio_weights) <= SHORT_BOUND, axis=1)
-        portfolio_weights = portfolio_weights[valid_weights][:n]
-    else:
-        portfolio_weights = random_generator.dirichlet(np.ones(portfolio_inputs.n) * 0.7, size=n)
-
-    expected_returns = portfolio_weights @ portfolio_inputs.mu
-    volatilities = np.sqrt(np.einsum(
-        'ij,jk,ik->i',
-        portfolio_weights,
-        portfolio_inputs.cov,
-        portfolio_weights,
-    ))
-    sharpe_ratios = (expected_returns - risk_free) / volatilities
-    random_portfolios = []
-
-    for expected_return, volatility, sharpe_ratio in zip(expected_returns, volatilities, sharpe_ratios):
-        random_portfolios.append({
-            'ret': float(expected_return),
-            'vol': float(volatility),
-            'sharpe': float(sharpe_ratio),
-        })
-
-    return random_portfolios
+    # Оба распределения лежат в симплексе: wi >= 0, сумма = 1.
+    # Разреженная половина лучше покрывает портфели около вершин/граней.
+    weights = np.vstack([
+        random_generator.dirichlet(np.full(portfolio_inputs.n, 0.7), size=n // 2),
+        random_generator.dirichlet(np.full(portfolio_inputs.n, 0.15), size=n - n // 2),
+    ])
+    expected_returns = weights @ portfolio_inputs.mu
+    variances = np.einsum('ij,jk,ik->i', weights, portfolio_inputs.cov, weights)
+    volatilities = np.sqrt(np.maximum(variances, 0.0))
+    ratios = np.divide(
+        expected_returns - risk_free, volatilities,
+        out=np.zeros_like(expected_returns), where=volatilities > 0,
+    )
+    cloud = [
+        {'ret': float(ret), 'vol': float(vol), 'sharpe': float(ratio), 'weights': w.tolist()}
+        for ret, vol, ratio, w in zip(expected_returns, volatilities, ratios, weights)
+    ]
+    if frontier:
+        # Сохраняем именно координаты узлов, без повторного округления матричным BLAS.
+        for point in frontier:
+            ratio = sharpe(np.asarray(point['weights']), portfolio_inputs, risk_free)
+            cloud.append({**point, 'sharpe': ratio if np.isfinite(ratio) else 0.0})
+    return cloud

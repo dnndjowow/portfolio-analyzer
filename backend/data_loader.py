@@ -2,18 +2,19 @@ import io
 import logging
 import re
 from datetime import date, datetime
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pandas as pd
 
 from schemas.data import Dataset, InflationSettings, Settings
 from config import (
-    N_ASSETS,
+    MIN_ASSETS,
+    MAX_ASSETS,
     MIN_OBS,
     PERIODS_PER_YEAR,
     RESAMPLE_RULE,
-    MONEY_RE,
-    MONEY_DEFAULT_NAME,
+    EXCLUDED_INDICATOR_RE,
 )
 
 
@@ -101,41 +102,40 @@ def _parse_value(value):
 def _parse_grid(rows: list[list]) -> tuple[Dataset, list[str]]:
     header_row = None
     header_column = None
+    columns = []
+    period_headers = {'date', 'dates', 'дата', 'даты', 'период', 'period'}
 
     for row_index, row in enumerate(rows):
-        for column_index in range(len(row)):
-            header_values = row[column_index:column_index + N_ASSETS]
-            has_asset_count = len(header_values) == N_ASSETS
-            has_text_headers = all(
-                isinstance(value, str) and value.strip()
-                for value in header_values
-            )
-
-            if has_asset_count and has_text_headers:
-                header_row = row_index
-                header_column = column_index
+        first_column = 1 if row and str(row[0]).strip().lower() in period_headers else 0
+        for column_index in range(first_column, len(row)):
+            names = []
+            for value in row[column_index:]:
+                if not isinstance(value, str) or not value.strip():
+                    break
+                if value.strip().lower() in {'портфель', 'portfolio'}:
+                    break
+                names.append(value.strip())
+            if len(names) >= MIN_ASSETS:
+                header_row, header_column, columns = row_index, column_index, names
                 break
-
         if header_row is not None:
             break
 
     if header_row is None:
-        raise DataError(
-            'Не найдена строка заголовков с 10 индикаторами подряд '
-            '(ожидаются столбцы B–K).'
-        )
+        raise DataError('Не найдена строка заголовков с названиями активов (минимум 2).')
+    n_assets = len(columns)
+    if n_assets > MAX_ASSETS:
+        raise DataError(f'Можно загрузить не более {MAX_ASSETS} активов.')
+    if any(EXCLUDED_INDICATOR_RE.search(name) for name in columns):
+        raise DataError('Показатель M2 исключён. Удалите его столбец из файла.')
 
-    columns = [
-        str(value).strip()
-        for value in rows[header_row][header_column:header_column + N_ASSETS]
-    ]
     periods = []
     observations = []
     has_dates = False
 
     for row in rows[header_row + 1:]:
-        padded_row = row + [None] * (header_column + N_ASSETS)
-        row_values = padded_row[header_column:header_column + N_ASSETS]
+        padded_row = row + [None] * (header_column + n_assets)
+        row_values = padded_row[header_column:header_column + n_assets]
         numeric_values = []
 
         for value in row_values:
@@ -149,7 +149,7 @@ def _parse_grid(rows: list[list]) -> tuple[Dataset, list[str]]:
                 break
             continue
 
-        if sum(value is None for value in numeric_values) > N_ASSETS // 2:
+        if sum(value is None for value in numeric_values) > n_assets // 2:
             break
 
         period_label = None
@@ -207,22 +207,6 @@ def guess_units(dataset: Dataset) -> str:
         return 'percent'
 
     return 'fraction'
-
-
-def ensure_money_supply(dataset: Dataset) -> tuple[Dataset, list[str]]:
-    if MONEY_RE.search(dataset.columns[0]):
-        return dataset, []
-
-    original_name = dataset.columns[0]
-    columns = [MONEY_DEFAULT_NAME, *dataset.columns[1:]]
-    warning_message = (
-        f'Индикатор 1 («{original_name}») не подписан как рублёвая денежная масса. '
-        f'Он переименован в {MONEY_DEFAULT_NAME} — убедитесь, '
-        'что в первом столбце действительно ряд M2 РФ.'
-    )
-    updated_dataset = dataset.model_copy(update={'columns': columns})
-
-    return updated_dataset, [warning_message]
 
 
 def to_frame(dataset: Dataset) -> pd.DataFrame:
@@ -314,9 +298,9 @@ def real_rate(nominal_annual: float, settings: Settings) -> float:
 
 
 def validate(returns_frame: pd.DataFrame) -> None:
-    if returns_frame.shape[1] != N_ASSETS:
+    if not MIN_ASSETS <= returns_frame.shape[1] <= MAX_ASSETS:
         raise DataError(
-            f'Нужно ровно {N_ASSETS} индикаторов, получено {returns_frame.shape[1]}.'
+            f'Нужно от {MIN_ASSETS} до {MAX_ASSETS} активов, получено {returns_frame.shape[1]}.'
         )
 
     if len(returns_frame) < MIN_OBS:
@@ -339,90 +323,80 @@ def load_tickers(
     start: str,
     end: str | None,
     frequency: str,
-    m2_levels: list[dict] | None,
 ) -> tuple[Dataset, list[str]]:
     warnings = []
-
     if frequency not in PERIODS_PER_YEAR:
         raise DataError(f'Неизвестная частота данных: {frequency}.')
-
     try:
         start_date = pd.Timestamp(start)
-        if end:
-            end_date = pd.Timestamp(end)
-        else:
-            end_date = pd.Timestamp.now().normalize()
+        end_date = pd.Timestamp(end) if end else pd.Timestamp.now().normalize()
+        if pd.isna(start_date) or pd.isna(end_date) or start_date.tz or end_date.tz:
+            raise ValueError('Invalid date')
     except (TypeError, ValueError) as error:
         raise DataError('Укажите корректные даты начала и окончания.') from error
-
     if start_date >= end_date:
         raise DataError('Дата начала должна быть раньше даты окончания.')
 
-    tickers = [ticker.strip() for ticker in tickers if ticker.strip()]
-
-    if not tickers or not re.fullmatch(MONEY_DEFAULT_NAME, tickers[0], re.I):
-        market_tickers = [ticker for ticker in tickers if ticker.upper() != MONEY_DEFAULT_NAME]
-        tickers = [MONEY_DEFAULT_NAME, *market_tickers]
-        warnings.append('Индикатор 1 не был рублёвой массой — подставлен M2RU.')
-
-    if len(tickers) != N_ASSETS:
-        raise DataError(f'Нужно 10 индикаторов (M2RU + 9 тикеров), получено {len(tickers)}.')
-
-    if len({ticker.upper() for ticker in tickers}) != N_ASSETS:
+    tickers = [ticker.strip().upper() for ticker in tickers if ticker.strip()]
+    if not MIN_ASSETS <= len(tickers) <= MAX_ASSETS:
+        raise DataError(f'Нужно от {MIN_ASSETS} до {MAX_ASSETS} рыночных тикеров.')
+    if len(set(tickers)) != len(tickers):
         raise DataError('В списке есть повторяющиеся тикеры.')
+    if any(EXCLUDED_INDICATOR_RE.search(ticker) for ticker in tickers):
+        raise DataError('Показатель M2 исключён. Укажите только рыночные активы.')
+    if any(not re.fullmatch(r'(?:MOEX:)?[A-Z0-9^][A-Z0-9^=._-]*', t) for t in tickers):
+        raise DataError('Некорректный тикер. Примеры: MOEX:SBER, SPY, BTC-USD.')
 
-    if not m2_levels:
-        raise DataError(
-            'Для M2RU загрузите CSV с уровнями денежной массы (дата; значение) — '
-            'в yfinance и MOEX ISS этого ряда нет.'
-        )
-
-    money_supply_levels = {}
-
-    for point in m2_levels:
-        try:
-            period_date = pd.Timestamp(point['date'])
-            money_supply_value = float(point['value'])
-        except (KeyError, TypeError, ValueError) as error:
-            raise DataError('Ряд M2RU должен содержать корректные пары «дата;значение».') from error
-
-        if pd.isna(period_date) or not np.isfinite(money_supply_value) or money_supply_value <= 0:
-            raise DataError(
-                'Значения M2RU должны быть конечными положительными числами с корректными датами.'
-            )
-
-        money_supply_levels[period_date] = money_supply_value
-
-    asset_prices = {
-        MONEY_DEFAULT_NAME: pd.Series(money_supply_levels).sort_index(),
-    }
-
-    for ticker in tickers[1:]:
-        if ticker.upper().startswith('MOEX:'):
-            asset_prices[ticker] = _load_moex_prices(ticker[5:], start, end)
+    def load_one(ticker):
+        if ticker.startswith('MOEX:'):
+            # Единая семантика end: правая граница не включается, как в Yahoo.
+            till = (end_date - pd.Timedelta(days=1)).date().isoformat()
+            series = _load_moex_prices(ticker[5:], start_date.date().isoformat(), till)
         else:
-            asset_prices[ticker] = _load_yahoo_prices(ticker, start, end)
+            series = _load_yahoo_prices(ticker, start_date.date().isoformat(), end_date.date().isoformat())
+        series = series.copy()
+        series.index = pd.to_datetime(series.index).tz_localize(None).normalize()
+        series = series[~series.index.duplicated(keep='last')].sort_index()
+        series = series.loc[(series.index >= start_date) & (series.index < end_date)]
+        if series.empty:
+            raise DataError(f'Нет котировок {ticker} за выбранный период.')
+        return series
+
+    # MOEX загружается параллельно. Отдельные вызовы yfinance.download идут
+    # последовательно: старые поддерживаемые версии используют общее состояние.
+    moex_tickers = [ticker for ticker in tickers if ticker.startswith('MOEX:')]
+    asset_prices = {}
+    if moex_tickers:
+        with ThreadPoolExecutor(max_workers=min(4, len(moex_tickers))) as pool:
+            asset_prices.update(zip(moex_tickers, pool.map(load_one, moex_tickers)))
+    for ticker in tickers:
+        if ticker not in asset_prices:
+            asset_prices[ticker] = load_one(ticker)
+    asset_prices = {ticker: asset_prices[ticker] for ticker in tickers}
 
     prices_frame = pd.DataFrame(asset_prices).sort_index()
     resample_rule = RESAMPLE_RULE.get(frequency)
-
     if resample_rule:
         prices_frame = prices_frame.resample(resample_rule).last()
-
-    prices_frame = prices_frame.ffill().dropna()
-    returns_frame = prices_frame.pct_change().dropna() * 100.0
+        # Неполный текущий месяц/квартал/год не считается полным наблюдением.
+        prices_frame = prices_frame.loc[prices_frame.index < end_date]
+    else:
+        prices_frame = prices_frame.dropna()
+    # Не переносим старые цены в пропуски и не создаём фиктивные нулевые доходности.
+    returns_frame = prices_frame.pct_change(fill_method=None).dropna() * 100.0
+    if returns_frame.empty:
+        raise DataError('Нет общей истории котировок. Измените период или список активов.')
     dataset = Dataset(
         columns=list(returns_frame.columns),
         index=[period.date().isoformat() for period in returns_frame.index],
         data=returns_frame.values.tolist(),
         has_dates=True,
     )
-
+    warnings.append('Загружены исторические рыночные котировки; доходности рассчитаны по ценам закрытия.')
+    if any(t.startswith('MOEX:') for t in tickers):
+        warnings.append('MOEX: цены CLOSE не скорректированы на дивиденды и дробления акций.')
     if len(dataset.data) < MIN_OBS:
-        warnings.append(
-            f'Получено {len(dataset.data)} наблюдений — для анализа нужно не менее {MIN_OBS}.'
-        )
-
+        warnings.append(f'Получено {len(dataset.data)} наблюдений — для анализа нужно не менее {MIN_OBS}.')
     return dataset, warnings
 
 
@@ -436,6 +410,7 @@ def _load_yahoo_prices(ticker: str, start: str, end: str | None) -> pd.Series:
             end=end,
             auto_adjust=True,
             progress=False,
+            timeout=20,
         )
     except Exception as error:
         logger.warning('Yahoo Finance request failed for %s: %s', ticker, error)
@@ -464,7 +439,7 @@ def _load_moex_prices(secid: str, start: str, end: str | None) -> pd.Series:
     engine_market = 'stock/shares'
     board_path = '/boards/TQBR'
 
-    if secid.upper() in {'IMOEX', 'RTSI', 'MOEXBC', 'RGBI', 'RGBITR'}:
+    if secid.upper() in {'IMOEX', 'MCFTR', 'RUCBITR', 'RUCBTRNS', 'RTSI', 'MOEXBC', 'RGBI', 'RGBITR'}:
         engine_market = 'stock/index'
         board_path = ''
 
@@ -481,6 +456,7 @@ def _load_moex_prices(secid: str, start: str, end: str | None) -> pd.Series:
             'from': start,
             'start': cursor,
             'iss.meta': 'off',
+            'iss.only': 'history',
             'history.columns': 'TRADEDATE,CLOSE',
         }
         if end:
@@ -492,6 +468,9 @@ def _load_moex_prices(secid: str, start: str, end: str | None) -> pd.Series:
             payload = response.json()
             history = payload.get('history', {})
             rows = history.get('data', [])
+            columns = history.get('columns', ['TRADEDATE', 'CLOSE'])
+            date_column = columns.index('TRADEDATE')
+            close_column = columns.index('CLOSE')
         except (requests.RequestException, ValueError, AttributeError) as error:
             logger.warning('MOEX ISS request failed for %s: %s', secid, error)
             raise DataError(f'Не удалось загрузить котировки {secid} с MOEX.') from error
@@ -500,13 +479,13 @@ def _load_moex_prices(secid: str, start: str, end: str | None) -> pd.Series:
             break
 
         for row in rows:
-            if not isinstance(row, (list, tuple)) or len(row) < 2 or row[1] is None:
+            if not isinstance(row, (list, tuple)) or len(row) <= max(date_column, close_column) or row[close_column] is None:
                 continue
 
             try:
-                price = float(row[1])
+                price = float(row[close_column])
                 if np.isfinite(price) and price > 0:
-                    closing_prices[pd.Timestamp(row[0])] = price
+                    closing_prices[pd.Timestamp(row[date_column])] = price
             except (TypeError, ValueError):
                 continue
 

@@ -1,4 +1,4 @@
-import type { CompareResult, Dataset, FrontierResult, Mode, Settings, UploadResult } from "@/types";
+import type { CompareResult, Dataset, FrontierResult, Mode, Settings, UploadResult, IndexInfo, IndexPortfolioRequest, IndexPortfolioResult } from "@/types";
 
 const apiHost = import.meta.env.VITE_API_URL as string | undefined;
 let apiBaseUrl = "";
@@ -48,13 +48,24 @@ export interface Common {
   returns: Dataset;
   settings: Settings;
   risk_free: number;
-  allow_short: boolean;
 }
 
 export type DiagnosticStage = "upload" | "tickers" | "frontier" | "compare" | "optimize" | "export";
 export type DiagnosticContext = Record<string, unknown>;
 
 export const api = {
+  async indexCatalog() {
+    const response = await fetch(`${API_BASE}/api/index-catalog`);
+    if (!response.ok) throw new Error(await errorText(response));
+    return response.json() as Promise<{ indices: IndexInfo[] }>;
+  },
+  async indexPortfolio(body: IndexPortfolioRequest, signal?: AbortSignal) {
+    const response = await fetch(`${API_BASE}/api/index-portfolio`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal,
+    });
+    if (!response.ok) throw new Error(await errorText(response));
+    return response.json() as Promise<IndexPortfolioResult>;
+  },
   diagnose(body: { stage: DiagnosticStage; error: string; context: DiagnosticContext }) {
     return call<{ analysis: string }>("/api/support/diagnose", body);
   },
@@ -80,7 +91,6 @@ export const api = {
     start: string;
     end?: string;
     frequency: string;
-    m2_levels: { date: string; value: number }[] | null;
   }) {
     return call<UploadResult>("/api/load-tickers", body);
   },

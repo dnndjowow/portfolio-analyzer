@@ -22,6 +22,7 @@ export interface UploadResult {
   preview: { index: string[]; data: (number | null)[][] };
   n_obs: number;
   suggested_units: "percent" | "fraction";
+  frequency?: Frequency;
   warnings: string[];
 }
 
@@ -50,10 +51,10 @@ export interface Portfolio {
 
 export interface FrontierResult {
   frontier: (Point & { weights: number[] })[];
-  cloud: (Point & { sharpe: number })[];
+  cloud: (Point & { sharpe: number; weights: number[] })[];
   assets: (Point & { name: string })[];
   min_vol: Point & { weights: number[] };
-  max_sharpe?: Point & { weights: number[]; sharpe: number };
+  max_sharpe?: Point & { weights: number[]; sharpe: number | null };
   risk_free_real: number;
   warnings: string[];
 }
@@ -75,3 +76,25 @@ export const MODE_LABEL: Record<Portfolio["mode"], string> = {
   equal: "Равные веса",
   manual: "Ручные веса",
 };
+
+export interface IndexInfo { id: string; name: string; ticker: string; currency: string; source: string; return_type: "price" | "total" }
+export interface IndexPortfolioRequest {
+  indices: string[]; weights?: number[]; capital: number; start: string; end?: string;
+  frequency: "monthly" | "quarterly" | "yearly";
+  rebalance: "none" | "monthly" | "quarterly" | "yearly";
+  base_currency: "RUB"; mode: "manual" | "min_vol" | "max_sharpe";
+  risk_free: number; include_m2: boolean;
+}
+export interface IndexStats { total_return: number; cagr: number; expected_return: number; volatility: number; max_drawdown: number; sharpe?: number | null }
+export interface IndexPortfolioRow {
+  date: string; nominal: number; real: number; nominal_growth: number; real_growth: number; m2_growth: number | null;
+  nominal_return: number | null; real_return: number | null; inflation: number | null; nominal_drawdown: number; real_drawdown: number;
+}
+export interface IndexPortfolioResult {
+  indices: IndexInfo[]; weights: number[]; final_weights: number[]; capital: number;
+  mode: IndexPortfolioRequest["mode"]; rebalance: IndexPortfolioRequest["rebalance"]; frequency: IndexPortfolioRequest["frequency"];
+  start: string; end: string; n_months: number;
+  nominal_metrics: IndexStats; real_metrics: IndexStats; final_nominal_capital: number; final_real_capital: number;
+  cumulative_inflation: number; risk_free_real: number; rows: IndexPortfolioRow[]; warnings: string[];
+  sources: { indices: string[]; inflation: string; currency: string; m2: string };
+}

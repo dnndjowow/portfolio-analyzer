@@ -1,7 +1,7 @@
 from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
-from config import N_ASSETS, PERIODS_PER_YEAR
+from config import MIN_ASSETS, MAX_ASSETS, PERIODS_PER_YEAR, EXCLUDED_INDICATOR_RE
 
 
 class Dataset(BaseModel):
@@ -12,17 +12,25 @@ class Dataset(BaseModel):
 
     @model_validator(mode='after')
     def validate_shape(self):
-        if len(self.columns) != N_ASSETS:
+        n_assets = len(self.columns)
+        if not MIN_ASSETS <= n_assets <= MAX_ASSETS:
             raise ValueError(
-                f'Нужно ровно {N_ASSETS} индикаторов, получено {len(self.columns)}.'
+                f'Нужно от {MIN_ASSETS} до {MAX_ASSETS} активов, получено {n_assets}.'
             )
+
+        if any(not name.strip() for name in self.columns):
+            raise ValueError('Названия активов не должны быть пустыми.')
+        if len({name.strip().upper() for name in self.columns}) != n_assets:
+            raise ValueError('Названия активов должны быть уникальными.')
+        if any(EXCLUDED_INDICATOR_RE.search(name.strip()) for name in self.columns):
+            raise ValueError('Показатель M2 исключён. Удалите его столбец из данных.')
 
         if len(self.index) != len(self.data):
             raise ValueError('Количество периодов не совпадает с количеством строк данных.')
 
         for observation in self.data:
-            if len(observation) != N_ASSETS:
-                raise ValueError(f'В каждой строке должно быть ровно {N_ASSETS} значений.')
+            if len(observation) != n_assets:
+                raise ValueError(f'В каждой строке должно быть ровно {n_assets} значений.')
 
         return self
 
@@ -63,8 +71,7 @@ class Settings(BaseModel):
 
 
 class TickersRequest(BaseModel):
-    tickers: list[str]
+    tickers: list[str] = Field(..., min_length=MIN_ASSETS, max_length=MAX_ASSETS)
     start: str = '2015-01-01'
     end: str | None = None
-    frequency: str = 'monthly'
-    m2_levels: list[dict] | None = None
+    frequency: Literal['daily', 'weekly', 'monthly', 'quarterly', 'yearly'] = 'monthly'

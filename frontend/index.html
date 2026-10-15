@@ -3,10 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#f5f5f7" />
-    <meta name="description" content="Portfolio — ясный взгляд на ваши инвестиции. Анализируйте риск, сравнивайте стратегии и находите баланс портфеля с учётом инфляции." />
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='12' fill='%231d1d1f'/%3E%3Cpath d='M11 27V20M20 27V13M29 27V8' stroke='white' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E" />
-    <title>Portfolio — ваш портфель в деталях</title>
+    <meta name="theme-color" content="#f2f4f1" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0e1513" media="(prefers-color-scheme: dark)" />
+    <meta name="description" content="Portfolio Analyzer — оптимизация портфеля по Марковицу: эффективная граница, веса активов, сравнение стратегий с учётом инфляции." />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='11' fill='%231e5a4c'/%3E%3Cpath d='M9 30C12 18 20 12 31 10' fill='none' stroke='white' stroke-width='3.4' stroke-linecap='round'/%3E%3Ccircle cx='17' cy='17.5' r='3.6' fill='%23f2c14e'/%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <title>Portfolio Analyzer — риск и доходность портфеля</title>
+    <script>
+      try {
+        var saved = localStorage.getItem("theme");
+        var dark = saved ? saved === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
+        if (dark) document.documentElement.classList.add("dark");
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

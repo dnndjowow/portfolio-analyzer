@@ -1,17 +1,19 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, ChartNoAxesCombined, Check, ChevronDown, FileDown, Layers3, Moon, Plus, Info, Sun, X } from "lucide-react";
+import { CircleAlert, ChartNoAxesCombined, ChevronDown, FileDown, Info, Layers3, Lightbulb, Moon, Plus, Sun, X } from "lucide-react";
 import { api, type DiagnosticContext, type DiagnosticStage, type Common } from "@/api/client";
 import type { CompareResult, FrontierResult, Portfolio, Settings, UploadResult } from "@/types";
 import { MODE_LABEL } from "@/types";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Segmented } from "@/components/ui/segmented";
 import { DataSource, PreviewTable } from "@/components/DataSource";
 import { OptimizePanel, parsePct, SettingsPanel, type OptimizeParams } from "@/components/ControlPanel";
 import { PortfolioList } from "@/components/PortfolioList";
 import { loadPortfolios, savePortfolios } from "@/lib/storage";
-import { pct, uid } from "@/lib/utils";
+import { cn, num, pct, PORTFOLIO_COLORS, uid } from "@/lib/utils";
+import { IndexPlanner } from "@/components/IndexPlanner";
 import { Welcome } from "@/components/Welcome";
-import { createDemoDataset } from "@/lib/demo";
+import { MARKET_EXAMPLE } from "@/lib/market";
 
 const FrontierChart = lazy(() => import("@/components/FrontierChart").then((module) => ({ default: module.FrontierChart })));
 const WeightsPie = lazy(() => import("@/components/WeightsPie").then((module) => ({ default: module.WeightsPie })));
@@ -23,31 +25,25 @@ const DEFAULT_SETTINGS: Settings = {
   inflation: { source: "constant", annual_rate: 0.08, series: null },
 };
 const PERIOD_SHORT: Record<string, string> = { daily: "дн.", weekly: "нед.", monthly: "мес.", quarterly: "кв.", yearly: "г." };
-const PERIOD_AXIS: Record<string, string> = { daily: "День", weekly: "Неделя", monthly: "Месяц", quarterly: "Квартал", yearly: "Год" };
+const PERIOD_AXIS: Record<string, string> = { daily: "Дни", weekly: "Недели", monthly: "Месяцы", quarterly: "Кварталы", yearly: "Годы" };
+const PERIOD_NAME: Record<string, string> = { daily: "день", weekly: "неделя", monthly: "месяц", quarterly: "квартал", yearly: "год" };
 
 function useTheme() {
-  const [dark, setDark] = useState(() => {
-    try {
-      const savedTheme = localStorage.getItem("theme");
-      if (savedTheme) {
-        return savedTheme === "dark";
-      }
-    } catch {
-      // Настройка недоступна, используем светлую тему.
-    }
-
-    return false;
-  });
+  // Тему заранее выставляет скрипт в index.html (сохранённый выбор или системная), здесь просто читаем её.
+  const [dark, setDarkState] = useState(() => document.documentElement.classList.contains("dark"));
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
+  }, [dark]);
 
+  const setDark = useCallback((value: boolean) => {
+    setDarkState(value);
     try {
-      localStorage.setItem("theme", dark ? "dark" : "light");
+      localStorage.setItem("theme", value ? "dark" : "light");
     } catch {
       // Тема применяется и без доступа к localStorage.
     }
-  }, [dark]);
+  }, []);
 
   return [dark, setDark] as const;
 }
@@ -65,14 +61,14 @@ function useDebounced<T>(value: T, delay = 350) {
 
 export default function Dashboard() {
   const [dark, setDark] = useTheme();
-  const [view, setView] = useState<"overview" | "workspace">("overview");
-  const [compact, setCompact] = useState(() => window.matchMedia("(max-width: 800px)").matches);
+  const [view, setView] = useState<"indices" | "start" | "workspace">("indices");
+  const [compact, setCompact] = useState(() => window.matchMedia("(max-width: 900px)").matches);
   const [upload, setUpload] = useState<UploadResult | null>(null);
   const [fileName, setFileName] = useState<string>();
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [inflationText, setInflationText] = useState("8");
   const [params, setParams] = useState<OptimizeParams>({
-    mode: "max_sharpe", rf: "5", targetReturn: "", targetVol: "", allowShort: false, rfNominal: true,
+    mode: "max_sharpe", rf: "5", targetReturn: "", targetVol: "", rfNominal: true,
   });
   const [frontier, setFrontier] = useState<FrontierResult | null>(null);
   const [compare, setCompare] = useState<CompareResult | null>(null);
@@ -80,6 +76,7 @@ export default function Dashboard() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const [marketBusy, setMarketBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notes, setNotes] = useState<string[]>([]);
   const [supportAnalysis, setSupportAnalysis] = useState<string | null>(null);
@@ -90,7 +87,7 @@ export default function Dashboard() {
   useEffect(() => { loadPortfolios().then(setPortfolios); }, []);
   useEffect(() => { savePortfolios(portfolios); }, [portfolios]);
   useEffect(() => {
-    const media = window.matchMedia("(max-width: 800px)");
+    const media = window.matchMedia("(max-width: 900px)");
     const update = () => setCompact(media.matches);
     media.addEventListener("change", update);
     return () => media.removeEventListener("change", update);
@@ -103,8 +100,8 @@ export default function Dashboard() {
   }), [settings, inflationText, params.rfNominal]);
 
   const common = useMemo<Common | null>(() => upload && {
-    returns: upload.dataset, settings: effectiveSettings, risk_free: parsePct(params.rf) ?? 0, allow_short: params.allowShort,
-  }, [upload, effectiveSettings, params.rf, params.allowShort]);
+    returns: upload.dataset, settings: effectiveSettings, risk_free: parsePct(params.rf) ?? 0,
+  }, [upload, effectiveSettings, params.rf]);
   const debouncedParameters = useDebounced(common);
 
   const columns = upload?.dataset.columns ?? [];
@@ -222,6 +219,9 @@ export default function Dashboard() {
     setSettings((currentSettings) => ({
       ...currentSettings,
       units: result.suggested_units,
+      frequency: result.frequency ?? currentSettings.frequency,
+      resample_to: null,
+      inflation: { ...currentSettings.inflation, source: "constant", series: null },
     }));
     setActiveId(null);
     setCompareIds([]);
@@ -235,12 +235,12 @@ export default function Dashboard() {
     const targetVolatility = parsePct(params.targetVol);
 
     if (params.mode === "efficient_risk" && targetReturn == null) {
-      setError("Введите целевую доходность в процентах.");
+      setError("Укажите целевую доходность в процентах — например, 6.");
       return;
     }
 
     if (params.mode === "efficient_return" && targetVolatility == null) {
-      setError("Введите целевую волатильность в процентах.");
+      setError("Укажите допустимую волатильность в процентах — например, 15.");
       return;
     }
 
@@ -257,28 +257,26 @@ export default function Dashboard() {
 
       let parameterDescription = "";
       if (params.mode === "max_sharpe") {
-        parameterDescription = `r_f ${params.rf}%`;
+        parameterDescription = `ставка ${params.rf}%`;
       } else if (params.mode === "efficient_risk") {
         parameterDescription = `доходность ${params.targetReturn}%`;
       } else if (params.mode === "efficient_return") {
-        parameterDescription = `волатильность ${params.targetVol}%`;
+        parameterDescription = `риск ${params.targetVol}%`;
       }
 
       const portfolioNumber = portfolios.filter((portfolio) => portfolio.mode === params.mode).length + 1;
-      const portfolioParameters = [parameterDescription];
-      if (params.allowShort) {
-        portfolioParameters.push("шорты");
-      }
 
       addPortfolio({
         name: `${MODE_LABEL[params.mode]} ${portfolioNumber}`,
         mode: params.mode,
-        params: portfolioParameters.filter(Boolean).join(", "),
+        params: parameterDescription,
         weights: result.weights,
         assets: result.assets,
       });
       setNotes((currentNotes) => mergeNotes(currentNotes, result.warnings));
-
+      if (compact) {
+        requestAnimationFrame(() => document.getElementById("results")?.scrollIntoView({ behavior: motionBehavior() }));
+      }
     } catch (requestError) {
       reportFailure("optimize", (requestError as Error).message, {
         ...common,
@@ -305,7 +303,7 @@ export default function Dashboard() {
   const exportCsv = () => {
     const lines = [["Портфель", ...columns].join(";"),
       ...visible.map((p) => [p.name, ...p.weights.map((w) => w.toFixed(6).replace(".", ","))].join(";"))];
-    download(new Blob(["\ufeff" + lines.join("\n")], { type: "text/csv" }), "portfolio_weights.csv");
+    download(new Blob(["﻿" + lines.join("\n")], { type: "text/csv" }), "portfolio_weights.csv");
   };
 
   const onInflationSeries = async (f: File) => {
@@ -320,132 +318,245 @@ export default function Dashboard() {
   } : undefined;
   const freq = effectiveSettings.resample_to ?? effectiveSettings.frequency;
 
-  const showOverview = (anchor?: string) => {
-    setView("overview");
-    requestAnimationFrame(() => {
-      if (anchor) document.getElementById(anchor)?.scrollIntoView({ behavior: motionBehavior() });
-      else scrollToTop();
-    });
+  const showStart = () => {
+    setView("start");
+    requestAnimationFrame(scrollToTop);
   };
   const openWorkspace = () => {
     if (upload) { setView("workspace"); scrollToTop(); }
-    else showOverview("start");
   };
-  const runDemo = () => {
-    const sample = createDemoDataset();
-    onLoaded(sample, "Демонстрационный набор · 120 месяцев");
-    addPortfolio({ name: "Равные веса", mode: "equal", params: "по 10%", weights: sample.dataset.columns.map(() => 0.1), assets: sample.dataset.columns });
+  const runMarketExample = async () => {
+    if (marketBusy) return;
+    setMarketBusy(true);
+    setError(null);
+    try {
+      const sample = await api.loadTickers(MARKET_EXAMPLE);
+      onLoaded(sample, "Пример: акции Мосбиржи");
+      const n = sample.dataset.columns.length;
+      addPortfolio({ name: "Равные веса", mode: "equal", params: `по ${pct(1 / n, 1)}`, weights: sample.dataset.columns.map(() => 1 / n), assets: sample.dataset.columns });
+    } catch (e) {
+      reportFailure("tickers", (e as Error).message, MARKET_EXAMPLE);
+    } finally {
+      setMarketBusy(false);
+    }
   };
   const addEqual = () => addPortfolio({
     name: "Равные веса", mode: "equal", params: `по ${pct(1 / columns.length, 1)}`,
     weights: columns.map(() => 1 / columns.length), assets: columns,
   });
+
   const feedback = (error || notes.length > 0) && (
-    <div className="notice-stack">
-      {error && <div role="alert" className="notice notice-error"><span>{error}</span></div>}
+    <div className="notices">
+      {error && (
+        <div role="alert" className="notice notice-error">
+          <CircleAlert size={18} aria-hidden />
+          <div>{error}</div>
+          <button type="button" className="notice-close" aria-label="Скрыть ошибку" onClick={() => setError(null)}><X size={16} aria-hidden /></button>
+        </div>
+      )}
       {error && (supportLoading || supportAnalysis) && (
-        <div className="notice notice-support" aria-live="polite">
-          <h2><Info size={16} className="text-accent" aria-hidden />Подсказка по ошибке</h2>
-          <p>{supportLoading ? "Проверяем причину ошибки…" : supportAnalysis}</p>
+        <div className="notice notice-help" aria-live="polite">
+          <Lightbulb size={18} aria-hidden />
+          <div>
+            <h3>Возможная причина</h3>
+            <p>{supportLoading ? "Разбираемся, что пошло не так…" : supportAnalysis}</p>
+          </div>
         </div>
       )}
       {notes.map((note) => (
-        <div key={note} className="notice"><span>{note}</span><button type="button" aria-label="Скрыть уведомление" className="shrink-0 text-muted hover:text-ink" onClick={() => setNotes((list) => list.filter((item) => item !== note))}><X size={15} aria-hidden /></button></div>
+        <div key={note} className="notice">
+          <Info size={18} aria-hidden />
+          <div>{note}</div>
+          <button type="button" className="notice-close" aria-label="Скрыть уведомление" onClick={() => setNotes((list) => list.filter((item) => item !== note))}><X size={16} aria-hidden /></button>
+        </div>
       ))}
     </div>
   );
 
+  // показатели активного портфеля для сводки сверху
+  const activeIndex = active ? shown.findIndex((p) => p.id === active.id) : -1;
+  const candidateSeries = compare && active && activeIndex >= 0 ? compare.series[activeIndex] : undefined;
+  const activeSeries = candidateSeries && candidateSeries.name === active?.name ? candidateSeries : null;
+  const activeColor = activeIndex >= 0 ? PORTFOLIO_COLORS[activeIndex % PORTFOLIO_COLORS.length] : undefined;
+  const inflationLabel = settings.inflation.source === "constant" ? `${inflationText || "0"}%` : "свой ряд";
+  const showWorkspace = view === "workspace" && upload !== null;
+
   return (
-    <div className="app-shell" id="top">
-      <header className="app-nav">
-        <div className="nav-inner">
-          <button type="button" className="brand" aria-label="Portfolio — на главную" onClick={() => showOverview()}><Brand /></button>
-          <nav className="nav-links" aria-label="Основная навигация">
-            <button type="button" className={view === "overview" ? "active" : ""} onClick={() => showOverview()}>Обзор</button>
-            <button type="button" className={view === "workspace" ? "active" : ""} onClick={openWorkspace}>Аналитика</button>
-            <button type="button" onClick={() => showOverview("features")}>Возможности</button>
+    <div className="app">
+      <header className="topbar">
+        <div className="topbar-inner">
+          <button type="button" className="brand" aria-label="Portfolio Analyzer — на стартовую страницу" onClick={() => setView("indices")}>
+            <BrandMark />
+            <span>Portfolio Analyzer</span>
+          </button>
+          <nav className="topnav" aria-label="Режим">
+            <Segmented label="Режим" value={view === "indices" ? "indices" : "custom"}
+              onChange={(next) => (next === "indices" ? setView("indices") : upload ? openWorkspace() : showStart())}
+              options={[{ value: "indices", label: "Индексы" }, { value: "custom", label: "Свои данные" }]} />
           </nav>
-          <div className="nav-actions">
-            <Button variant="ghost" size="icon" aria-label={dark ? "Светлая тема" : "Тёмная тема"} title={dark ? "Светлая тема" : "Тёмная тема"} onClick={() => setDark(!dark)}>{dark ? <Sun size={17} aria-hidden /> : <Moon size={17} aria-hidden />}</Button>
-            <Button size="sm" onClick={openWorkspace}>{upload ? "К анализу" : "Начать анализ"}<ArrowRight size={13} aria-hidden /></Button>
+          {showWorkspace && upload && (
+            <div className="topbar-data">
+              <span className="data-chip" title={fileName}>
+                <span className="dot" aria-hidden />
+                <strong>{fileName}</strong>
+                <span className="data-chip-stat num">{upload.n_obs} периодов, {columns.length} активов</span>
+              </span>
+            </div>
+          )}
+          <div className="topbar-actions">
+            {showWorkspace && <Button variant="outline" size="sm" onClick={showStart} title="Загрузить другие данные"><Plus size={15} aria-hidden /><span className="hidden lg:inline">Новые данные</span></Button>}
+            <Button variant="ghost" size="icon" aria-label={dark ? "Включить светлую тему" : "Включить тёмную тему"} title={dark ? "Светлая тема" : "Тёмная тема"} onClick={() => setDark(!dark)}>
+              {dark ? <Sun size={18} aria-hidden /> : <Moon size={18} aria-hidden />}
+            </Button>
           </div>
         </div>
       </header>
 
-      {view === "overview" || !upload ? (
-        <main><Welcome dataSource={<DataSource onLoaded={onLoaded} onFailure={reportFailure} fileName={fileName} />} feedback={feedback} onDemo={runDemo} /></main>
+      <div hidden={view !== "indices"}><IndexPlanner dark={dark} /></div>
+      {view === "indices" ? null : !showWorkspace || !upload ? (
+        <main>
+          <Welcome
+            dataSource={<DataSource onLoaded={onLoaded} onFailure={reportFailure} fileName={fileName} />}
+            feedback={feedback} onMarketExample={runMarketExample} marketBusy={marketBusy}
+            onBack={upload ? openWorkspace : undefined} />
+        </main>
       ) : (
-        <main className="workspace" id="workspace">
-          <div className="workspace-heading">
-            <div><p className="eyebrow">РАБОЧЕЕ ПРОСТРАНСТВО</p><h1>Ваш портфель. В деталях.</h1><p className="source-tag"><Check size={13} className="text-pos" aria-hidden /><span>{fileName}</span></p></div>
-            <Button variant="outline" size="sm" onClick={() => showOverview("start")}>Загрузить другие данные <Plus size={14} aria-hidden /></Button>
-          </div>
-          <div className="workspace-grid">
-            <aside className="workspace-sidebar" aria-label="Настройки анализа">
-              <PanelSection title="Источник данных" open={false}>
-                <DataSource onLoaded={onLoaded} onFailure={reportFailure} fileName={fileName} />
-              </PanelSection>
-              <PanelSection title="Параметры данных" open={false}>
+        <main className="workspace">
+          <aside className="sidebar" aria-label="Настройки анализа">
+            <section className="side-block" aria-labelledby="goal-title">
+              <h2 id="goal-title" className="side-title">Цель портфеля</h2>
+              <OptimizePanel p={params} onChange={setParams} onRun={runOptimize} busy={busy} disabled={!upload}
+                range={range} rfReal={frontier?.risk_free_real} />
+            </section>
+
+            <section className="side-block" aria-labelledby="list-title">
+              <h2 id="list-title" className="side-title">Мои портфели {visible.length > 0 && <span className="count num">{visible.length}</span>}</h2>
+              {visible.length > 0 && <p className="field-hint pf-hint">Галочка — показать на графиках и в сравнении (до 5).</p>}
+              <PortfolioList items={visible} activeId={activeId} compareIds={compareIds}
+                onOpen={setActiveId}
+                onToggleCompare={(id) => setCompareIds((ids) => ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id].slice(0, 5))}
+                onDelete={(id) => { setPortfolios((list) => list.filter((p) => p.id !== id)); setCompareIds((ids) => ids.filter((x) => x !== id)); if (activeId === id) setActiveId(null); }}
+                onRename={(id, name) => setPortfolios((list) => list.map((p) => p.id === id ? { ...p, name } : p))} />
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button variant="subtle" size="sm" onClick={addEqual}><Plus size={15} aria-hidden />Равные веса</Button>
+                {visible.length > 0 && <>
+                  <Button variant="outline" size="sm" onClick={exportXlsx}><FileDown size={15} aria-hidden />Excel</Button>
+                  <Button variant="outline" size="sm" onClick={exportCsv}><FileDown size={15} aria-hidden />CSV</Button>
+                </>}
+              </div>
+            </section>
+
+            <details className="side-details">
+              <summary>
+                <span>Настройки данных<small>Шаг: {PERIOD_NAME[freq]}, инфляция {inflationLabel}</small></span>
+                <ChevronDown aria-hidden />
+              </summary>
+              <div className="side-details-body">
                 <SettingsPanel settings={settings} onChange={setSettings} hasDates={upload.dataset.has_dates}
                   inflationText={inflationText} setInflationText={setInflationText} onInflationSeries={onInflationSeries} />
-              </PanelSection>
-              <PanelSection title="Ваша стратегия" open={!compact}>
-                <OptimizePanel p={params} onChange={setParams} onRun={runOptimize} busy={busy} disabled={!upload}
-                  range={range} rfReal={frontier?.risk_free_real} />
-              </PanelSection>
-              <PanelSection title="Мои портфели" open={!compact}>
-                <Button variant="outline" size="sm" className="mb-4 w-full" onClick={addEqual}><Plus size={14} aria-hidden />Добавить равные веса</Button>
-                <PortfolioList items={visible} activeId={activeId} compareIds={compareIds}
-                  onOpen={setActiveId}
-                  onToggleCompare={(id) => setCompareIds((ids) => ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id].slice(0, 5))}
-                  onDelete={(id) => { setPortfolios((list) => list.filter((p) => p.id !== id)); setCompareIds((ids) => ids.filter((x) => x !== id)); if (activeId === id) setActiveId(null); }}
-                  onRename={(id, name) => setPortfolios((list) => list.map((p) => p.id === id ? { ...p, name } : p))} />
-                {visible.length > 0 && <div className="mt-4 flex gap-2"><Button variant="outline" size="sm" onClick={exportXlsx}><FileDown size={14} aria-hidden />Excel</Button><Button variant="outline" size="sm" onClick={exportCsv}><FileDown size={14} aria-hidden />CSV</Button></div>}
-              </PanelSection>
-            </aside>
-            <div className="workspace-results">
-              <div className="summary-strip" aria-label="Сводка данных">
-                <div className="summary-item"><p>Наблюдений</p><strong className="num">{upload.n_obs}</strong><small>в исходном наборе</small></div>
-                <div className="summary-item"><p>Индикаторов</p><strong className="num">{columns.length}</strong><small>включая M2RU</small></div>
-                <div className="summary-item"><p>Инфляция</p><strong className="num">{settings.inflation.source === "constant" ? `${inflationText}%` : "Свой ряд"}</strong><small>{settings.inflation.source === "constant" ? "годовых" : "за каждый период"}</small></div>
               </div>
-              {feedback}
-              <Suspense fallback={<div className="chart-placeholder" role="status"><span className="chart-loading" aria-hidden /><p>Открываем инструменты анализа…</p></div>}>
-              <Card>
-                <CardHeader><div><p className="mb-1 text-[10px] font-medium uppercase tracking-[.12em] text-muted">Риск и доходность</p><CardTitle>Эффективная граница</CardTitle></div>
-                  {frontier && <p className="text-[11px] text-muted num">Мин. риск {pct(frontier.min_vol.vol)}{frontier.max_sharpe && ` · Шарп ${frontier.max_sharpe.sharpe.toFixed(2).replace(".", ",")}`}</p>}
-                </CardHeader>
+            </details>
+          </aside>
+
+          <div className="main" id="results">
+            {activeSeries && active ? (
+              <section className="overview" aria-labelledby="overview-title">
+                <h1 id="overview-title"><span className="swatch" style={{ background: activeColor }} aria-hidden /><span>{active.name}</span></h1>
+                <p>{MODE_LABEL[active.mode]}{active.params && `, ${active.params}`}. Все значения — реальные, за вычетом инфляции.</p>
+              </section>
+            ) : (
+              <section className="overview" aria-labelledby="overview-title">
+                <h1 id="overview-title"><span>{visible.length ? "Выберите портфель" : "Данные готовы к анализу"}</span></h1>
+                <p>{visible.length
+                  ? "Нажмите на портфель в списке слева, чтобы увидеть его показатели и состав."
+                  : "Выберите цель слева и нажмите «Построить портфель». Граница ниже уже посчитана по вашим данным."}</p>
+              </section>
+            )}
+
+            {activeSeries ? (
+              <dl className="stats" aria-label="Показатели портфеля">
+                <div className="stat"><dt>Доходность в год</dt><dd className={cn(activeSeries.metrics.expected_return < 0 && "is-neg")}>{pct(activeSeries.metrics.expected_return, 1)}<small>CAGR {pct(activeSeries.metrics.cagr, 1)}</small></dd></div>
+                <div className="stat"><dt>Волатильность</dt><dd>{pct(activeSeries.metrics.volatility, 1)}<small>стандартное отклонение</small></dd></div>
+                <div className="stat"><dt>Коэффициент Шарпа</dt><dd>{num(activeSeries.metrics.sharpe)}<small>доходность на единицу риска</small></dd></div>
+                <div className="stat"><dt>Макс. просадка</dt><dd className="is-neg">{pct(activeSeries.metrics.max_drawdown, 1)}
+                  <small>{activeSeries.metrics.recovered ? `восстановление ≈ ${num(activeSeries.metrics.max_recovery_years, 1)} г.` : "не восстановился к концу данных"}</small></dd></div>
+              </dl>
+            ) : (
+              <dl className="stats" aria-label="Сводка данных">
+                <div className="stat"><dt>Периодов</dt><dd className="num">{upload.n_obs}<small>шаг: {PERIOD_NAME[settings.frequency]}</small></dd></div>
+                <div className="stat"><dt>Активов</dt><dd className="num">{columns.length}<small>в наборе данных</small></dd></div>
+                <div className="stat"><dt>Инфляция</dt><dd className="num">{settings.inflation.source === "constant" ? `${inflationText || "0"}%` : "Свой ряд"}<small>{settings.inflation.source === "constant" ? "годовых" : "за каждый период"}</small></dd></div>
+                <div className="stat"><dt>Безрисковая ставка</dt><dd className="num">{params.rf || "0"}%<small>{frontier ? `реальная ${pct(frontier.risk_free_real, 1)}` : "годовых"}</small></dd></div>
+              </dl>
+            )}
+
+            {feedback}
+
+            <Suspense fallback={<div className="empty" role="status"><span className="spinner" aria-hidden /><p>Загружаем графики…</p></div>}>
+              <Card aria-labelledby="frontier-title">
+                <CardHeader title={<span id="frontier-title">Эффективная граница</span>}
+                  sub="Все возможные сочетания активов: чем левее, тем спокойнее, чем выше, тем доходнее."
+                  aside={frontier && <p className="panel-sub num">Мин. риск {pct(frontier.min_vol.vol, 1)}{frontier.max_sharpe && `, макс. Шарп ${num(frontier.max_sharpe.sharpe)}`}</p>} />
                 <CardContent>
                   {frontier ? <FrontierChart data={frontier} dark={dark} portfolios={(compare?.series ?? []).map((series) => ({ ...series.point, name: series.name }))} />
-                    : <div className="chart-placeholder" role="status">{error ? <><ChartNoAxesCombined size={28} aria-hidden /><p>График пока недоступен. Проверьте данные и параметры анализа.</p><Button variant="outline" size="sm" onClick={() => setSettings((s) => ({ ...s }))}>Повторить расчёт</Button></> : <><span className="chart-loading" aria-hidden /><p>Строим границу и 5 000 возможных портфелей…</p></>}</div>}
+                    : <div className="empty" role="status">{error
+                      ? <><ChartNoAxesCombined aria-hidden /><strong>График не построен</strong><p>Проверьте сообщение выше и настройки данных, затем попробуйте снова.</p><Button variant="outline" size="sm" onClick={() => setSettings((s) => ({ ...s }))}>Пересчитать</Button></>
+                      : <><span className="spinner" aria-hidden /><p>Строим границу и 5 000 случайных портфелей…</p></>}</div>}
                 </CardContent>
               </Card>
-              <div className="grid min-w-0 gap-5 2xl:grid-cols-2">
-                <Card><CardHeader><div><p className="mb-1 text-[10px] font-medium uppercase tracking-[.12em] text-muted">Состав портфеля</p><CardTitle>Каждый актив на своём месте</CardTitle></div>{active && <span className="text-[11px] text-muted">{active.name}</span>}</CardHeader>
-                  <CardContent>{active ? <WeightsPie assets={active.assets} weights={active.weights} title={active.name} /> : <div className="empty-chart"><Layers3 aria-hidden /><p>Выберите стратегию и нажмите «Оптимизировать»,<br />чтобы увидеть распределение активов.</p></div>}</CardContent>
+
+              <div className="panel-grid">
+                <Card>
+                  <CardHeader title="Состав портфеля" sub={active ? <>Веса активов в портфеле «{active.name}». Нажмите на актив, чтобы выделить его.</> : "Доли каждого актива в выбранном портфеле."} />
+                  <CardContent>
+                    {active ? <WeightsPie assets={active.assets} weights={active.weights} title={active.name} dark={dark} />
+                      : <div className="empty"><Layers3 aria-hidden /><strong>Портфель не выбран</strong><p>Постройте портфель или выберите его в списке — здесь появятся веса активов.</p></div>}
+                  </CardContent>
                 </Card>
-                <Card><CardHeader><div><p className="mb-1 text-[10px] font-medium uppercase tracking-[.12em] text-muted">Динамика капитала</p><CardTitle>История в одной кривой</CardTitle></div></CardHeader>
-                  <CardContent>{compare ? <ReturnsCurve data={compare} periodLabel={PERIOD_AXIS[freq]} /> : <div className="empty-chart"><ChartNoAxesCombined aria-hidden /><p>Создайте портфель, чтобы увидеть<br />его доходность и просадку.</p></div>}</CardContent>
+                <Card>
+                  <CardHeader title="Динамика капитала" sub="Как менялась бы стоимость портфелей на истории." />
+                  <CardContent>
+                    {compare ? <ReturnsCurve data={compare} periodLabel={PERIOD_AXIS[freq]} dark={dark} />
+                      : <div className="empty"><ChartNoAxesCombined aria-hidden /><strong>Пока нечего показать</strong><p>Как только появится портфель, здесь будет его кривая капитала и просадки.</p></div>}
+                  </CardContent>
                 </Card>
               </div>
-              {compare && <Card><CardHeader><CardTitle>Сравнение в деталях</CardTitle><span className="text-[11px] text-muted">До 5 портфелей — выберите их в списке</span></CardHeader><CardContent><MetricsTable data={compare} ppyLabel={PERIOD_SHORT[freq]} /></CardContent></Card>}
-              <details className="source-details"><summary>Исходные данные · первые 20 строк<ChevronDown aria-hidden /></summary><div className="px-5 pb-5"><PreviewTable result={upload} /></div></details>
-              </Suspense>
-            </div>
+
+              {compare && (
+                <Card>
+                  <CardHeader title="Сравнение портфелей" sub={compare.series.length > 1 ? "Ключевые показатели рядом." : "Отметьте ещё портфели галочкой в списке слева, чтобы сравнить их."} />
+                  <CardContent><MetricsTable data={compare} ppyLabel={PERIOD_SHORT[freq]} /></CardContent>
+                </Card>
+              )}
+
+              <details className="data-details">
+                <summary><span>Исходные данные<small>первые 20 строк</small></span><ChevronDown aria-hidden /></summary>
+                <PreviewTable result={upload} />
+              </details>
+            </Suspense>
           </div>
         </main>
       )}
-      <footer className="app-footer"><div className="footer-inner"><button type="button" className="brand" aria-label="Portfolio — на главную" onClick={() => showOverview()}><Brand /></button><p>Portfolio Analyzer. Данные, баланс и ваша стратегия.</p><a href="#top">Наверх ↑</a></div></footer>
+
+      <footer className="footer">
+        <div className="footer-inner">
+          <span>Portfolio Analyzer</span>
+          <span>Расчёты основаны на исторических данных и не являются инвестиционной рекомендацией.</span>
+        </div>
+      </footer>
     </div>
   );
 }
 
-function Brand() {
-  return <><span className="brand-mark"><svg viewBox="0 0 28 28" fill="none" aria-hidden><path d="M5 23V16M14 23V9M23 23V4" stroke="currentColor" strokeWidth="3.8" strokeLinecap="round" /></svg></span><span>Portfolio<span className="text-accent">.</span></span></>;
-}
-
-function PanelSection({ title, open = true, children }: { title: string; open?: boolean; children: React.ReactNode }) {
-  return <details className="panel-section" open={open}><summary>{title}<ChevronDown aria-hidden /></summary><div className="panel-section-body">{children}</div></details>;
+function BrandMark() {
+  return (
+    <span className="brand-mark" aria-hidden>
+      <svg viewBox="0 0 20 20" fill="none">
+        <path d="M3.5 16.5C5 10 9 6.2 16.5 4.5" stroke="white" strokeWidth="2.2" strokeLinecap="round" />
+        <circle cx="7.6" cy="9.4" r="2.4" fill="#f2c14e" />
+      </svg>
+    </span>
+  );
 }
 
 function motionBehavior(): ScrollBehavior { return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth"; }

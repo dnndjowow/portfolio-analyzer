@@ -85,12 +85,27 @@ def frontier(data: FrontierRequest):
             'weights': maximum_sharpe_weights.tolist(),
             'sharpe': optimizer.sharpe(maximum_sharpe_weights, portfolio_inputs, data.risk_free),
         }
+        if not np.isfinite(maximum_sharpe['sharpe']):
+            maximum_sharpe['sharpe'] = None
 
         warning_message = optimizer.sharpe_warning(portfolio_inputs, data.risk_free)
         if warning_message:
             warnings.append(warning_message)
 
         frontier_points = optimizer.efficient_frontier(portfolio_inputs, data.n_points)
+        if maximum_sharpe['ret'] >= minimum_volatility['ret'] and maximum_sharpe['ret'] > data.risk_free:
+            frontier_points.append(maximum_sharpe)
+        random_portfolios = optimizer.monte_carlo(
+            portfolio_inputs, data.risk_free, data.n_samples, frontier=frontier_points,
+        )
+        refined = optimizer.refine_frontier(portfolio_inputs, frontier_points, random_portfolios)
+        # Добавленные при уточнении узлы также должны присутствовать в облаке.
+        known = {(point['ret'], point['vol']) for point in frontier_points}
+        for point in refined:
+            if (point['ret'], point['vol']) not in known:
+                ratio = optimizer.sharpe(np.asarray(point['weights']), portfolio_inputs, data.risk_free)
+                random_portfolios.append({**point, 'sharpe': ratio if np.isfinite(ratio) else 0.0})
+        frontier_points = refined
 
     except optimizer.OptimizationError as error:
         raise HTTPException(
@@ -108,12 +123,6 @@ def frontier(data: FrontierRequest):
             'vol': asset_volatility,
         })
 
-    random_portfolios = optimizer.monte_carlo(
-        portfolio_inputs,
-        data.risk_free,
-        data.n_samples,
-    )
-
     return {
         'frontier': frontier_points,
         'cloud': random_portfolios,
@@ -128,7 +137,7 @@ def frontier(data: FrontierRequest):
 @router.post('/portfolio/metrics')
 def portfolio_metrics(data: MetricsRequest):
     returns_frame, portfolio_inputs, periods_per_year, warnings = prepare_portfolio(data)
-    portfolio_weights = check_weights(data.weights, data.allow_short)
+    portfolio_weights = check_weights(data.weights, portfolio_inputs.n)
 
     calculated_metrics = metrics.compute_metrics(
         returns_frame.values,
@@ -154,7 +163,7 @@ def compare(data: CompareRequest):
     portfolio_series = []
 
     for portfolio in data.portfolios:
-        portfolio_weights = check_weights(portfolio.weights, data.allow_short)
+        portfolio_weights = check_weights(portfolio.weights, portfolio_inputs.n)
         calculated_metrics = metrics.compute_metrics(
             returns_frame.values,
             portfolio_weights,

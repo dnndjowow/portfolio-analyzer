@@ -24,12 +24,6 @@ async def upload(file: UploadFile = File(...)):
         else:
             dataset, warnings = data_loader.parse_excel(file_content)
 
-        dataset, money_supply_warnings = data_loader.ensure_money_supply(dataset)
-        warnings.extend(money_supply_warnings)
-
-        if len(dataset.columns) != data_loader.N_ASSETS:
-            raise data_loader.DataError('Ожидается 10 индикаторов.')
-
         if len(dataset.data) < data_loader.MIN_OBS:
             warnings.append(
                 f'В файле {len(dataset.data)} наблюдений — '
@@ -76,7 +70,6 @@ def load_tickers(data: TickersRequest):
             data.start,
             data.end,
             data.frequency,
-            data.m2_levels,
         )
     except data_loader.DataError as error:
         raise HTTPException(
@@ -92,5 +85,6 @@ def load_tickers(data: TickersRequest):
         },
         'n_obs': len(dataset.data),
         'suggested_units': 'percent',
+        'frequency': data.frequency,
         'warnings': warnings,
     }

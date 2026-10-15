@@ -30,7 +30,7 @@ def test_weights_valid_long_only(inp, mode, kw):
     w = opt.optimize(inp, mode, RF, **kw)
     assert w.shape == (10,)
     assert abs(w.sum() - 1) < 1e-6
-    assert (w >= -1e-8).all()
+    assert (w >= 0).all()
 
 
 def test_min_vol_below_max_sharpe(inp):
@@ -63,11 +63,15 @@ def test_infeasible_targets_raise(inp):
         opt.efficient_return(inp, 1e-5)
 
 
-def test_shorts_allowed(inp):
-    short = opt.make_inputs(np.zeros(1), 1) if False else opt.Inputs(inp.mu, inp.cov, allow_short=True)
-    w = opt.min_volatility(short)
-    assert abs(w.sum() - 1) < 1e-6
-    assert opt.port_vol(w, short) <= opt.port_vol(opt.min_volatility(inp), inp) + 1e-9
+def test_long_only_constraint_changes_unconstrained_solution():
+    # Без ограничения оптимум для этой матрицы имеет отрицательный вес второго актива.
+    inputs = opt.Inputs(np.array([0.05, 0.10]), np.array([[0.01, 0.015], [0.015, 0.04]]))
+    inverse = np.linalg.inv(inputs.cov)
+    unconstrained = inverse @ np.ones(2) / (np.ones(2) @ inverse @ np.ones(2))
+    assert unconstrained[1] < 0
+    weights = opt.min_volatility(inputs)
+    assert (weights >= 0).all()
+    assert np.allclose(weights, [1, 0], atol=1e-7)
 
 
 def test_frontier_monotone(inp):
@@ -91,3 +95,42 @@ def test_metrics_keys(returns):
     for k in ("expected_return", "volatility", "max_drawdown", "max_recovery_periods", "sharpe"):
         assert k in m
     assert len(m["curve"]) == len(returns) + 1
+
+
+def test_cloud_uses_same_statistics_and_nonnegative_weights(inp):
+    for point in opt.monte_carlo(inp, RF, 300):
+        weights = np.asarray(point["weights"])
+        assert (weights >= 0).all()
+        assert weights.sum() == pytest.approx(1)
+        assert point["ret"] == pytest.approx(opt.port_return(weights, inp))
+        assert point["vol"] == pytest.approx(opt.port_vol(weights, inp))
+
+
+def test_two_asset_curve_refinement_does_not_cut_through_cloud():
+    inputs = opt.Inputs(np.array([0.04, 0.18]), np.diag([0.04, 0.09]))
+    initial = opt.efficient_frontier(inputs, 5)
+    cloud = opt.monte_carlo(inputs, 0, 300, frontier=initial)
+    points = opt.refine_frontier(inputs, initial, cloud)
+    assert len(points) > len(initial)
+    for point in cloud:
+        if points[0]["ret"] < point["ret"] < points[-1]["ret"]:
+            interpolated = np.interp(point["ret"], [p["ret"] for p in points], [p["vol"] for p in points])
+            assert point["vol"] >= interpolated - 1e-7
+    for point in points:
+        assert min(point["weights"]) >= 0
+        assert opt.port_vol(np.array(point["weights"]), inputs) == pytest.approx(point["vol"])
+
+
+def test_equal_returns_produce_single_efficient_point():
+    inputs = opt.Inputs(np.array([0.1, 0.1]), np.diag([0.01, 0.04]))
+    points = opt.efficient_frontier(inputs)
+    assert len(points) == 1
+    assert points[0]["ret"] == pytest.approx(0.1)
+    assert points[0]["weights"] == pytest.approx([0.8, 0.2])
+
+
+def test_highest_return_tie_uses_minimum_risk_combination():
+    inputs = opt.Inputs(np.array([0.05, 0.2, 0.2]), np.diag([0.01, 0.04, 0.09]))
+    point = opt.efficient_frontier(inputs, 5)[-1]
+    assert point["ret"] == pytest.approx(0.2)
+    assert point["weights"] == pytest.approx([0, 9 / 13, 4 / 13], abs=1e-7)

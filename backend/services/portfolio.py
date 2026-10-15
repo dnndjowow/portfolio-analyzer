@@ -25,7 +25,6 @@ def prepare_portfolio(data: PortfolioRequest):
     portfolio_inputs = optimizer.make_inputs(
         returns_frame.values,
         periods_per_year,
-        data.allow_short,
     )
 
     if data.settings.risk_free_nominal:
@@ -34,13 +33,13 @@ def prepare_portfolio(data: PortfolioRequest):
     return returns_frame, portfolio_inputs, periods_per_year, warnings
 
 
-def check_weights(weights: list[float], allow_short: bool = False) -> np.ndarray:
+def check_weights(weights: list[float], n_assets: int) -> np.ndarray:
     portfolio_weights = np.asarray(weights, dtype=float)
 
-    if portfolio_weights.shape != (data_loader.N_ASSETS,):
+    if portfolio_weights.shape != (n_assets,):
         raise HTTPException(
             status_code=422,
-            detail=f'Нужно {data_loader.N_ASSETS} весов, получено {portfolio_weights.size}.',
+            detail=f'Нужно {n_assets} весов, получено {portfolio_weights.size}.',
         )
 
     if not np.isfinite(portfolio_weights).all():
@@ -57,23 +56,10 @@ def check_weights(weights: list[float], allow_short: bool = False) -> np.ndarray
             detail=f'Сумма весов должна быть 1, получено {total_weight:.4f}.',
         )
 
-    if allow_short:
-        below_minimum = np.any(portfolio_weights < -optimizer.SHORT_BOUND - 1e-8)
-        above_maximum = np.any(portfolio_weights > 1 + 1e-8)
-
-        if below_minimum or above_maximum:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    'При коротких позициях вес каждого актива должен быть от '
-                    f'{-optimizer.SHORT_BOUND:.0%} до 100%.'
-                ),
-            )
-
-    elif np.any(portfolio_weights < -1e-8):
+    if np.any(portfolio_weights < 0) or np.any(portfolio_weights > 1):
         raise HTTPException(
             status_code=422,
-            detail='Отрицательные веса допустимы только при включённых коротких позициях.',
+            detail='Короткие продажи запрещены: вес каждого актива должен быть от 0 до 1.',
         )
 
     return portfolio_weights

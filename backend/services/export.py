@@ -18,7 +18,7 @@ def create_portfolio_export(data: ExportRequest) -> io.BytesIO:
     weights_sheet.append(['Портфель', *returns_frame.columns])
 
     for portfolio in data.portfolios:
-        portfolio_weights = check_weights(portfolio.weights, data.allow_short)
+        portfolio_weights = check_weights(portfolio.weights, portfolio_inputs.n)
         weights_sheet.append([portfolio.name, *portfolio_weights.tolist()])
 
     metrics_sheet = workbook.create_sheet('Показатели')
