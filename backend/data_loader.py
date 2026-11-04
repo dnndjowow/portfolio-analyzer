@@ -35,34 +35,23 @@ def _is_number(value) -> bool:
 def parse_excel(content: bytes) -> tuple[Dataset, list[str]]:
     from openpyxl import load_workbook
 
-    values_sheet = load_workbook(
+    values_book = load_workbook(
         io.BytesIO(content),
         data_only=True,
         read_only=True,
-    ).worksheets[0]
-    formulas_sheet = load_workbook(
+    )
+    formulas_book = load_workbook(
         io.BytesIO(content),
         data_only=False,
         read_only=True,
-    ).worksheets[0]
-    rows = []
-
-    for values_row, formulas_row in zip(
-        values_sheet.iter_rows(values_only=True),
-        formulas_sheet.iter_rows(values_only=True),
-    ):
-        row = []
-
-        for value, formula in zip(values_row, formulas_row):
-            # Итоговые строки с формулами не являются наблюдениями.
-            if isinstance(formula, str) and formula.startswith('='):
-                row.append(None)
-            else:
-                row.append(value)
-
-        rows.append(row)
-
-    return _parse_grid(rows)
+    )
+    try:
+        rows = list(values_book.worksheets[0].iter_rows(values_only=True))
+        formulas = list(formulas_book.worksheets[0].iter_rows(values_only=True))
+    finally:
+        values_book.close()
+        formulas_book.close()
+    return _parse_grid(rows, formulas=formulas)
 
 
 def parse_csv(content: bytes) -> tuple[Dataset, list[str]]:
@@ -99,7 +88,7 @@ def _parse_value(value):
     return value
 
 
-def _parse_grid(rows: list[list]) -> tuple[Dataset, list[str]]:
+def _parse_grid(rows, *, formulas=None) -> tuple[Dataset, list[str]]:
     header_row = None
     header_column = None
     columns = []
@@ -133,8 +122,33 @@ def _parse_grid(rows: list[list]) -> tuple[Dataset, list[str]]:
     observations = []
     has_dates = False
 
-    for row in rows[header_row + 1:]:
+    for row_number, row in enumerate(rows[header_row + 1:], start=header_row + 2):
+        row = list(row)
         padded_row = row + [None] * (header_column + n_assets)
+        if formulas is not None:
+            formula_row = list(formulas[row_number - 1])
+            asset_formulas = formula_row[header_column:header_column + n_assets]
+            # Строка итогов без периода относится только к выбранным столбцам активов.
+            period_label = padded_row[header_column - 1] if header_column else None
+            summary_label = period_label in (None, '') or (
+                isinstance(period_label, str) and re.fullmatch(
+                    r'итог(?:о|и)?|сумма|средн(?:ее|яя)|total|sum|average|mean', period_label.strip(), re.I,
+                )
+            )
+            if observations and header_column > 0 and summary_label and all(
+                isinstance(formula, str) and re.match(
+                    r'^=\s*(?:_xlfn\.)?(?:AVERAGE|SUM|STDEV(?:\.[SP])?|VAR(?:\.[SP])?|MIN|MAX|COUNT)\s*\(',
+                    formula, re.I,
+                ) for formula in asset_formulas
+            ):
+                break
+            for column in range(max(0, header_column - 1), header_column + n_assets):
+                formula = formula_row[column] if column < len(formula_row) else None
+                if isinstance(formula, str) and formula.startswith('=') and padded_row[column] is None:
+                    raise DataError(
+                        f'В строке {row_number} формула без сохранённого результата. '
+                        'Пересчитайте и сохраните файл в Excel или LibreOffice.'
+                    )
         row_values = padded_row[header_column:header_column + n_assets]
         numeric_values = []
 
@@ -164,6 +178,8 @@ def _parse_grid(rows: list[list]) -> tuple[Dataset, list[str]]:
             periods.append(pd.Timestamp(period_label).date().isoformat())
         elif _is_number(period_label):
             periods.append(str(int(period_label)))
+        elif header_column > 0 and str(rows[header_row][header_column - 1]).strip().lower() in {'date', 'dates', 'дата', 'даты'}:
+            raise DataError(f'В строке {row_number} пропущена или некорректна дата.')
         else:
             periods.append(str(len(observations) + 1))
 
@@ -182,6 +198,9 @@ def _parse_grid(rows: list[list]) -> tuple[Dataset, list[str]]:
         data=observations,
         has_dates=has_dates,
     )
+    # Проверяем смешанные или повторяющиеся даты ещё до ответа на загрузку файла.
+    if dataset.has_dates:
+        to_frame(dataset)
 
     return dataset, []
 
@@ -213,7 +232,19 @@ def to_frame(dataset: Dataset) -> pd.DataFrame:
     returns_frame = pd.DataFrame(dataset.data, columns=dataset.columns, dtype=float)
 
     if dataset.has_dates:
-        returns_frame.index = pd.to_datetime(dataset.index)
+        try:
+            dates = pd.to_datetime(dataset.index, format='mixed', errors='coerce')
+        except (ValueError, TypeError, OverflowError) as error:
+            raise DataError('Не удалось прочитать даты наблюдений. Используйте формат ГГГГ-ММ-ДД.') from error
+        if not isinstance(dates, pd.DatetimeIndex) or dates.tz is not None:
+            raise DataError('Даты наблюдений должны быть без часового пояса.')
+        if dates.isna().any():
+            position = int(np.flatnonzero(dates.isna())[0]) + 1
+            raise DataError(f'Некорректна или пропущена дата наблюдения {position}.')
+        dates = dates.normalize()
+        if dates.has_duplicates:
+            raise DataError('Даты наблюдений не должны повторяться.')
+        returns_frame.index = dates
     else:
         returns_frame.index = pd.Index(dataset.index, name='period')
 
@@ -223,12 +254,18 @@ def to_frame(dataset: Dataset) -> pd.DataFrame:
 def preprocess(dataset: Dataset, settings: Settings) -> tuple[pd.DataFrame, list[str]]:
     warnings = []
     returns_frame = to_frame(dataset)
+    original_index = returns_frame.index.copy()
+    if dataset.has_dates and not returns_frame.index.is_monotonic_increasing:
+        returns_frame = returns_frame.sort_index()
+        warnings.append('Наблюдения отсортированы по датам.')
     unit_divisor = 1.0
 
     if settings.units == 'percent':
         unit_divisor = 100.0
 
     returns_frame = returns_frame / unit_divisor
+    if (returns_frame < -1).any().any():
+        raise DataError('Доходность не может быть ниже −100%: короткие продажи не поддерживаются.')
     missing_count = int(returns_frame.isna().sum().sum())
 
     if missing_count:
@@ -253,17 +290,25 @@ def preprocess(dataset: Dataset, settings: Settings) -> tuple[pd.DataFrame, list
 
         inflation_series = pd.Series(
             np.asarray(inflation_values, dtype=float) / unit_divisor,
-            index=to_frame(dataset).index,
+            index=original_index,
         ).reindex(returns_frame.index)
 
     else:
+        if not np.isfinite(settings.inflation.annual_rate) or settings.inflation.annual_rate <= -1:
+            raise DataError('Годовая инфляция должна быть конечным числом больше −100%.')
         period_inflation = (
             (1.0 + settings.inflation.annual_rate) ** (1.0 / source_periods_per_year) - 1.0
         )
         inflation_series = pd.Series(period_inflation, index=returns_frame.index)
 
+    if not np.isfinite(inflation_series.to_numpy()).all() or (inflation_series <= -1).any():
+        raise DataError('Инфляция за каждый период должна быть конечным числом больше −100%.')
+
     # Реальная доходность: (1 + номинальная) / (1 + инфляция) − 1.
     returns_frame = (1.0 + returns_frame).div(1.0 + inflation_series, axis=0) - 1.0
+
+    # Агрегация не должна увеличивать число реальных наблюдений за счёт пустых периодов.
+    validate(returns_frame)
 
     if settings.resample_to and settings.resample_to != settings.frequency:
         if PERIODS_PER_YEAR[settings.resample_to] > source_periods_per_year:
@@ -272,9 +317,25 @@ def preprocess(dataset: Dataset, settings: Settings) -> tuple[pd.DataFrame, list
         if not dataset.has_dates:
             raise DataError('Для смены таймфрейма в первом столбце нужны даты.')
 
+        if settings.frequency != 'daily':
+            source_rule = {'weekly': 'W-FRI', 'monthly': 'M', 'quarterly': 'Q', 'yearly': 'Y'}[settings.frequency]
+            source_periods = returns_frame.index.to_period(source_rule)
+            if source_periods.has_duplicates:
+                raise DataError('В одном исходном периоде несколько наблюдений. Проверьте выбранный шаг данных.')
+            if np.any(np.diff(source_periods.asi8) != 1):
+                raise DataError(
+                    'При смене шага обнаружены периоды без наблюдений в исходной истории. '
+                    'Заполните историю или выберите непрерывный период.'
+                )
+
         returns_frame = (
-            (1.0 + returns_frame).resample(RESAMPLE_RULE[settings.resample_to]).prod() - 1.0
+            (1.0 + returns_frame).resample(RESAMPLE_RULE[settings.resample_to]).prod(min_count=1) - 1.0
         )
+        if returns_frame.isna().any().any():
+            raise DataError(
+                'При смене шага обнаружены периоды без наблюдений. '
+                'Заполните исходную историю или выберите непрерывный период.'
+            )
 
     validate(returns_frame)
 
@@ -294,7 +355,11 @@ def real_rate(nominal_annual: float, settings: Settings) -> float:
     else:
         annual_inflation = settings.inflation.annual_rate
 
-    return (1.0 + nominal_annual) / (1.0 + annual_inflation) - 1.0
+    with np.errstate(over='ignore', divide='ignore', invalid='ignore'):
+        converted = float(np.divide(1.0 + nominal_annual, 1.0 + annual_inflation) - 1.0)
+    if not np.isfinite(converted):
+        raise DataError('Не удалось пересчитать безрисковую ставку. Проверьте ставку и инфляцию.')
+    return converted
 
 
 def validate(returns_frame: pd.DataFrame) -> None:
@@ -311,6 +376,8 @@ def validate(returns_frame: pd.DataFrame) -> None:
 
     if returns_frame.isna().any().any() or not np.isfinite(returns_frame.values).all():
         raise DataError('В данных остались NaN или бесконечные значения.')
+    if (returns_frame < -1).any().any():
+        raise DataError('Доходность не может быть ниже −100%.')
 
     zero_variance = returns_frame.std() == 0
     if zero_variance.any():

@@ -15,6 +15,8 @@ def prepare_portfolio(data: PortfolioRequest):
 
     try:
         returns_frame, warnings = data_loader.preprocess(data.returns, data.settings)
+        if data.settings.risk_free_nominal:
+            data.risk_free = data_loader.real_rate(data.risk_free, data.settings)
     except data_loader.DataError as error:
         raise HTTPException(
             status_code=422,
@@ -26,9 +28,6 @@ def prepare_portfolio(data: PortfolioRequest):
         returns_frame.values,
         periods_per_year,
     )
-
-    if data.settings.risk_free_nominal:
-        data.risk_free = data_loader.real_rate(data.risk_free, data.settings)
 
     return returns_frame, portfolio_inputs, periods_per_year, warnings
 

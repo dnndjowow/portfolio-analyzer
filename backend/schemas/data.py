@@ -1,5 +1,5 @@
 from typing import Literal
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, FiniteFloat, model_validator
 
 from config import MIN_ASSETS, MAX_ASSETS, PERIODS_PER_YEAR, EXCLUDED_INDICATOR_RE
 
@@ -7,7 +7,7 @@ from config import MIN_ASSETS, MAX_ASSETS, PERIODS_PER_YEAR, EXCLUDED_INDICATOR_
 class Dataset(BaseModel):
     columns: list[str]
     index: list[str]
-    data: list[list[float | None]]
+    data: list[list[FiniteFloat | None]]
     has_dates: bool = False
 
     @model_validator(mode='after')
@@ -39,9 +39,11 @@ class InflationSettings(BaseModel):
     source: Literal['constant', 'series'] = 'constant'
     annual_rate: float = Field(
         0.08,
+        gt=-1,
+        allow_inf_nan=False,
         description='Годовая инфляция в долях, для source=constant',
     )
-    series: list[float] | None = Field(
+    series: list[FiniteFloat] | None = Field(
         None,
         description='Инфляция за каждый период, в тех же единицах, что и доходности',
     )

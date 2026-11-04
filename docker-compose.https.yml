@@ -1,0 +1,20 @@
+services:
+  caddy:
+    image: caddy:2.11.7-alpine
+    restart: unless-stopped
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Укажите домен в APP_DOMAIN в файле .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      frontend:
+        condition: service_started
+
+volumes:
+  caddy_data:
+  caddy_config:

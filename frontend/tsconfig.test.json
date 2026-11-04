@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "types": ["node"],
+    "skipLibCheck": true,
+    "rootDir": ".",
+    "outDir": ".test-build"
+  },
+  "include": ["src/lib/input.ts", "tests/*.test.ts"]
+}

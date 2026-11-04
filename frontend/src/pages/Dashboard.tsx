@@ -14,6 +14,7 @@ import { cn, num, pct, PORTFOLIO_COLORS, uid } from "@/lib/utils";
 import { IndexPlanner } from "@/components/IndexPlanner";
 import { Welcome } from "@/components/Welcome";
 import { MARKET_EXAMPLE } from "@/lib/market";
+import { parseInflationSeries } from "@/lib/input";
 
 const FrontierChart = lazy(() => import("@/components/FrontierChart").then((module) => ({ default: module.FrontierChart })));
 const WeightsPie = lazy(() => import("@/components/WeightsPie").then((module) => ({ default: module.WeightsPie })));
@@ -67,6 +68,7 @@ export default function Dashboard() {
   const [fileName, setFileName] = useState<string>();
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [inflationText, setInflationText] = useState("8");
+  const [inflationFileError, setInflationFileError] = useState<string | null>(null);
   const [params, setParams] = useState<OptimizeParams>({
     mode: "max_sharpe", rf: "5", targetReturn: "", targetVol: "", rfNominal: true,
   });
@@ -93,15 +95,30 @@ export default function Dashboard() {
     return () => media.removeEventListener("change", update);
   }, []);
 
-  // итоговые настройки: инфляция из текстового поля, флаг номинальной r_f
+  const annualInflation = parsePct(inflationText);
+  const riskFree = parsePct(params.rf);
+  const inputError = riskFree === null || riskFree <= -1
+    ? "Укажите безрисковую ставку числом больше −100%, без знака %."
+    : settings.inflation.source === "constant"
+      ? annualInflation === null || annualInflation <= -1
+        ? "Укажите годовую инфляцию числом больше −100%, без знака %." : null
+      : inflationFileError ?? (!settings.inflation.series?.length
+        ? "Загрузите ряд инфляции за каждый период."
+        : upload && settings.inflation.series.length !== upload.dataset.data.length
+          ? `В ряду инфляции ${settings.inflation.series.length} значений, нужно ${upload.dataset.data.length}.`
+          : settings.inflation.series.some(value => !Number.isFinite(value) || value / (settings.units === "percent" ? 100 : 1) <= -1)
+            ? "Инфляция за каждый период должна быть больше −100%." : null);
+
+  // Некорректные поля останавливают расчёт, не подменяя значения нулём.
   const effectiveSettings = useMemo<Settings>(() => ({
     ...settings, risk_free_nominal: params.rfNominal,
-    inflation: { ...settings.inflation, annual_rate: parsePct(inflationText) ?? 0 },
-  }), [settings, inflationText, params.rfNominal]);
+    inflation: { ...settings.inflation, annual_rate: settings.inflation.source === "constant" ? annualInflation ?? Number.NaN : settings.inflation.annual_rate },
+  }), [settings, annualInflation, params.rfNominal]);
 
-  const common = useMemo<Common | null>(() => upload && {
-    returns: upload.dataset, settings: effectiveSettings, risk_free: parsePct(params.rf) ?? 0,
-  }, [upload, effectiveSettings, params.rf]);
+  const common = useMemo<Common | null>(() => {
+    if (!upload || inputError || riskFree === null) return null;
+    return { returns: upload.dataset, settings: effectiveSettings, risk_free: riskFree };
+  }, [upload, effectiveSettings, riskFree, inputError]);
   const debouncedParameters = useDebounced(common);
 
   const columns = upload?.dataset.columns ?? [];
@@ -147,7 +164,7 @@ export default function Dashboard() {
 
   // эффективная граница
   useEffect(() => {
-    if (!debouncedParameters) return;
+    if (!debouncedParameters || inputError) { setFrontier(null); return; }
     let cancelled = false;
 
     api.frontier(debouncedParameters)
@@ -166,12 +183,12 @@ export default function Dashboard() {
     return () => {
       cancelled = true;
     };
-  }, [debouncedParameters, reportFailure]);
+  }, [debouncedParameters, reportFailure, inputError]);
 
   // кривые и метрики показанных портфелей
   const shownKey = shown.map((portfolio) => portfolio.id + portfolio.name).join(",");
   useEffect(() => {
-    if (!debouncedParameters || !shown.length) {
+    if (!debouncedParameters || inputError || !shown.length) {
       setCompare(null);
       return;
     }
@@ -198,7 +215,7 @@ export default function Dashboard() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedParameters, shownKey, reportFailure]);
+  }, [debouncedParameters, shownKey, reportFailure, inputError]);
 
   const addPortfolio = useCallback((p: Omit<Portfolio, "id" | "createdAt">) => {
     const full = { ...p, id: uid(), createdAt: Date.now() };
@@ -212,6 +229,7 @@ export default function Dashboard() {
     setFileName(label);
     setError(null);
     setSupportAnalysis(null);
+    setInflationFileError(null);
     lastSupportFailure.current = "";
     setFrontier(null);
     setCompare(null);
@@ -307,9 +325,14 @@ export default function Dashboard() {
   };
 
   const onInflationSeries = async (f: File) => {
-    const vals = (await f.text()).split(/\r?\n/).map((l) => l.split(/[;,\t]/).pop()!.trim().replace(",", "."))
-      .map(Number).filter(Number.isFinite);
-    setSettings((s) => ({ ...s, inflation: { ...s.inflation, series: vals } }));
+    try {
+      const values = parseInflationSeries(await f.text());
+      setInflationFileError(null);
+      setSettings(s => ({ ...s, inflation: { ...s.inflation, series: values } }));
+    } catch (failure) {
+      setInflationFileError((failure as Error).message);
+      setSettings(s => ({ ...s, inflation: { ...s.inflation, series: null } }));
+    }
   };
 
   const range = frontier && frontier.frontier.length ? {
@@ -345,16 +368,17 @@ export default function Dashboard() {
     weights: columns.map(() => 1 / columns.length), assets: columns,
   });
 
-  const feedback = (error || notes.length > 0) && (
+  const displayError = inputError ?? error;
+  const feedback = (displayError || notes.length > 0) && (
     <div className="notices">
-      {error && (
+      {displayError && (
         <div role="alert" className="notice notice-error">
           <CircleAlert size={18} aria-hidden />
-          <div>{error}</div>
-          <button type="button" className="notice-close" aria-label="Скрыть ошибку" onClick={() => setError(null)}><X size={16} aria-hidden /></button>
+          <div>{displayError}</div>
+          {!inputError && <button type="button" className="notice-close" aria-label="Скрыть ошибку" onClick={() => setError(null)}><X size={16} aria-hidden /></button>}
         </div>
       )}
-      {error && (supportLoading || supportAnalysis) && (
+      {error && !inputError && (supportLoading || supportAnalysis) && (
         <div className="notice notice-help" aria-live="polite">
           <Lightbulb size={18} aria-hidden />
           <div>
@@ -425,7 +449,7 @@ export default function Dashboard() {
           <aside className="sidebar" aria-label="Настройки анализа">
             <section className="side-block" aria-labelledby="goal-title">
               <h2 id="goal-title" className="side-title">Цель портфеля</h2>
-              <OptimizePanel p={params} onChange={setParams} onRun={runOptimize} busy={busy} disabled={!upload}
+              <OptimizePanel p={params} onChange={setParams} onRun={runOptimize} busy={busy} disabled={!common}
                 range={range} rfReal={frontier?.risk_free_real} />
             </section>
 
@@ -499,7 +523,7 @@ export default function Dashboard() {
                   aside={frontier && <p className="panel-sub num">Мин. риск {pct(frontier.min_vol.vol, 1)}{frontier.max_sharpe && `, макс. Шарп ${num(frontier.max_sharpe.sharpe)}`}</p>} />
                 <CardContent>
                   {frontier ? <FrontierChart data={frontier} dark={dark} portfolios={(compare?.series ?? []).map((series) => ({ ...series.point, name: series.name }))} />
-                    : <div className="empty" role="status">{error
+                    : <div className="empty" role="status">{displayError
                       ? <><ChartNoAxesCombined aria-hidden /><strong>График не построен</strong><p>Проверьте сообщение выше и настройки данных, затем попробуйте снова.</p><Button variant="outline" size="sm" onClick={() => setSettings((s) => ({ ...s }))}>Пересчитать</Button></>
                       : <><span className="spinner" aria-hidden /><p>Строим границу и 5 000 случайных портфелей…</p></>}</div>}
                 </CardContent>

@@ -28,10 +28,7 @@ function PercentField({ id, label, value, onChange, hint, placeholder }:
   );
 }
 
-export const parsePct = (s: string) => {
-  const v = Number(s.replace(",", ".").trim());
-  return Number.isFinite(v) && s.trim() !== "" ? v / 100 : null;
-};
+export { parsePct } from "@/lib/input";
 
 export function SettingsPanel({ settings, onChange, hasDates, inflationText, setInflationText, onInflationSeries }: {
   settings: Settings; onChange: (s: Settings) => void; hasDates: boolean;
@@ -88,7 +85,7 @@ export function SettingsPanel({ settings, onChange, hasDates, inflationText, set
             <Input id="infl-series" type="file" accept=".csv,.txt" className="control-file"
               onChange={(e) => e.target.files?.[0] && onInflationSeries(e.target.files[0])} />
             <p className="field-hint">
-              {settings.inflation.series ? `Загружено значений: ${settings.inflation.series.length}.` : "Значения в тех же единицах, что и доходности."}
+              {settings.inflation.series ? `Загружено значений: ${settings.inflation.series.length}.` : "Одно число на строку или дата;инфляция. Единицы — как у доходностей."}
             </p>
           </div>
         )}

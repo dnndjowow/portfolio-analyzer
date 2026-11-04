@@ -48,6 +48,16 @@ def _get(url, *, rosstat=False, params=None):
                 session.mount('https://rosstat.gov.ru/', RosstatTLSAdapter())
                 session.mount('https://www.rosstat.gov.ru/', RosstatTLSAdapter())
             response = session.get(url, params=params, timeout=30)
+            if rosstat:
+                page_text = response.content.decode('utf-8', errors='ignore').lower()
+                maintenance = 'сайт росстата временно недоступен' in page_text or (
+                    response.status_code >= 400 and 'технические работы' in page_text and 'росстат' in page_text
+                )
+                if maintenance:
+                    raise DataError(
+                        'На сайте Росстата технические работы. '
+                        'Месячный ИПЦ временно недоступен; повторите расчёт позже.'
+                    )
             response.raise_for_status()
             return response.content
     except requests.RequestException as error:

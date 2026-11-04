@@ -11,6 +11,8 @@ class PortfolioRequest(BaseModel):
     settings: Settings = Field(default_factory=Settings)
     risk_free: float = Field(
         0.05,
+        gt=-1,
+        allow_inf_nan=False,
         description='Годовая безрисковая ставка в долях',
     )
     # Старые клиенты с false совместимы; true всегда отклоняется с HTTP 422.
